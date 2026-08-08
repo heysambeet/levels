@@ -1,0 +1,10 @@
+name = "nifty50-levels-proxy"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+# The Worker exists only to add CORS headers to NSE, which sends none.
+# Upstox is called directly from the browser and from tool/build_indicators.py,
+# because it does send CORS — so it deliberately has no route here.
+
+[observability]
+enabled = true
