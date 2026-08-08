@@ -13,7 +13,7 @@
 
 <style>
 @font-face{font-family:Fraunces;src:url(fonts/Fraunces.ttf) format('truetype-variations');font-weight:100 900;font-display:swap}
-@font-face{font-family:InterV;src:url(fonts/Inter.ttf) format('truetype-variations');font-weight:100 900;font-display:swap}
+@font-face{font-family:WorkSans;src:url(fonts/WorkSans.ttf) format('truetype-variations');font-weight:100 900;font-display:swap}
 
 :root{
   --bg:#0A0A0B; --card:#141416; --raised:#1C1C1F; --rule:#232326;
@@ -25,9 +25,14 @@
 html{-webkit-text-size-adjust:100%}
 body{
   background:var(--bg); color:var(--ink);
-  font-family:InterV,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  font-family:WorkSans,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
   font-size:15px; line-height:1.45; font-weight:400;
-  font-feature-settings:'tnum' 1,'zero' 1,'cv05' 1,'ss03' 1;
+  /* tnum keeps price columns from jittering as digits change; zero is the
+     slashed zero. Both are present in Work Sans — checked before switching,
+     because a numbers-heavy page set in a proportional-figure face reflows
+     on every refresh. Inter's cv05/ss03 are dropped: those tags mean
+     something different in Work Sans. */
+  font-feature-settings:'tnum' 1,'zero' 1;
   -webkit-font-smoothing:antialiased;
   padding-bottom:calc(28px + var(--safe-b));
   overscroll-behavior-y:contain;
