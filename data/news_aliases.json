@@ -1,32 +1,270 @@
 {
- "note": "press_name drives the search query; aliases must match the headline; block drops known wrong subjects",
+ "note": "press_name drives the search query; aliases must appear in the headline; block drops known wrong subjects",
  "stocks": [
   {
-   "symbol": "ADANIENT",
-   "press_name": "Adani Enterprises",
+   "symbol": "RELIANCE",
+   "press_name": "Reliance Industries",
    "aliases": [
-    "ADANIENT",
-    "Adani Enterprises"
+    "RELIANCE",
+    "RIL",
+    "Reliance Industries"
+   ],
+   "block": [
+    "reliance power",
+    "reliance infra",
+    "reliance communications",
+    "reliance capital",
+    "reliance home",
+    "anil ambani"
+   ]
+  },
+  {
+   "symbol": "HDFCBANK",
+   "press_name": "HDFC Bank",
+   "aliases": [
+    "HDFC Bank",
+    "HDFCBANK"
+   ],
+   "block": [
+    "hdfc life",
+    "hdfc amc",
+    "hdfc ergo"
+   ]
+  },
+  {
+   "symbol": "ICICIBANK",
+   "press_name": "ICICI Bank",
+   "aliases": [
+    "ICICI Bank",
+    "ICICIBANK"
+   ],
+   "block": [
+    "icici lombard",
+    "icici pru",
+    "icici securities"
+   ]
+  },
+  {
+   "symbol": "BHARTIARTL",
+   "press_name": "Bharti Airtel",
+   "aliases": [
+    "Airtel",
+    "BHARTIARTL",
+    "Bharti Airtel"
+   ],
+   "block": [
+    "airtel africa"
+   ]
+  },
+  {
+   "symbol": "INFY",
+   "press_name": "Infosys",
+   "aliases": [
+    "INFY",
+    "Infosys"
    ],
    "block": []
   },
   {
-   "symbol": "ADANIPORTS",
-   "press_name": "Adani Ports",
+   "symbol": "SBIN",
+   "press_name": "SBI",
    "aliases": [
-    "ADANIPORTS",
-    "Adani Ports",
-    "Adani Ports and Special Economic Zone"
+    "SBI",
+    "SBIN",
+    "State Bank of India"
+   ],
+   "block": [
+    "sbi life",
+    "sbi card",
+    "sbi mutual",
+    "sbi amc"
+   ]
+  },
+  {
+   "symbol": "LT",
+   "press_name": "Larsen & Toubro",
+   "aliases": [
+    "L&T",
+    "LT",
+    "Larsen & Toubro"
+   ],
+   "block": [
+    "lt foods",
+    "l&t finance",
+    "ltimindtree"
+   ]
+  },
+  {
+   "symbol": "ITC",
+   "press_name": "ITC",
+   "aliases": [
+    "ITC"
+   ],
+   "block": [
+    "itc hotels"
+   ]
+  },
+  {
+   "symbol": "TCS",
+   "press_name": "TCS",
+   "aliases": [
+    "TCS",
+    "Tata Consultancy"
+   ],
+   "block": [
+    "nashik",
+    "harassment",
+    "molest",
+    "arrest"
+   ]
+  },
+  {
+   "symbol": "AXISBANK",
+   "press_name": "Axis Bank",
+   "aliases": [
+    "AXISBANK",
+    "Axis Bank"
+   ],
+   "block": [
+    "axis amc",
+    "axis max"
+   ]
+  },
+  {
+   "symbol": "KOTAKBANK",
+   "press_name": "Kotak Mahindra Bank",
+   "aliases": [
+    "KOTAKBANK",
+    "Kotak Bank",
+    "Kotak Mahindra Bank"
    ],
    "block": []
   },
   {
-   "symbol": "APOLLOHOSP",
-   "press_name": "Apollo Hospitals",
+   "symbol": "M&M",
+   "press_name": "Mahindra & Mahindra",
    "aliases": [
-    "APOLLOHOSP",
-    "Apollo Hospitals",
-    "Apollo Hospitals Enterprise"
+    "M&M",
+    "Mahindra & Mahindra"
+   ],
+   "block": [
+    "tech mahindra",
+    "mahindra logistics",
+    "mahindra lifespace",
+    "mahindra holidays"
+   ]
+  },
+  {
+   "symbol": "HINDUNILVR",
+   "press_name": "Hindustan Unilever",
+   "aliases": [
+    "HINDUNILVR",
+    "HUL",
+    "Hindustan Unilever"
+   ],
+   "block": []
+  },
+  {
+   "symbol": "BAJFINANCE",
+   "press_name": "Bajaj Finance",
+   "aliases": [
+    "BAJFINANCE",
+    "Bajaj Finance"
+   ],
+   "block": [
+    "bajaj auto",
+    "bajaj finserv",
+    "bajaj housing"
+   ]
+  },
+  {
+   "symbol": "MARUTI",
+   "press_name": "Maruti Suzuki",
+   "aliases": [
+    "MARUTI",
+    "Maruti",
+    "Maruti Suzuki"
+   ],
+   "block": []
+  },
+  {
+   "symbol": "SUNPHARMA",
+   "press_name": "Sun Pharma",
+   "aliases": [
+    "SUNPHARMA",
+    "Sun Pharma",
+    "Sun Pharmaceutical"
+   ],
+   "block": [
+    "sun tv"
+   ]
+  },
+  {
+   "symbol": "NTPC",
+   "press_name": "NTPC",
+   "aliases": [
+    "NTPC"
+   ],
+   "block": [
+    "ntpc green"
+   ]
+  },
+  {
+   "symbol": "TITAN",
+   "press_name": "Titan Company",
+   "aliases": [
+    "TITAN",
+    "Titan",
+    "Titan Company"
+   ],
+   "block": [
+    "saturn",
+    "moon",
+    "methane",
+    "attack on titan",
+    "anime",
+    "titanic",
+    "titan submersible"
+   ]
+  },
+  {
+   "symbol": "ULTRACEMCO",
+   "press_name": "UltraTech Cement",
+   "aliases": [
+    "ULTRACEMCO",
+    "UltraTech",
+    "UltraTech Cement"
+   ],
+   "block": []
+  },
+  {
+   "symbol": "TMPV",
+   "press_name": "Tata Motors",
+   "aliases": [
+    "TMPV",
+    "Tata Motors",
+    "Tata Motors Passenger"
+   ],
+   "block": [
+    "tmcv",
+    "commercial vehicles"
+   ]
+  },
+  {
+   "symbol": "POWERGRID",
+   "press_name": "Power Grid",
+   "aliases": [
+    "POWERGRID",
+    "Power Grid"
+   ],
+   "block": []
+  },
+  {
+   "symbol": "TATASTEEL",
+   "press_name": "Tata Steel",
+   "aliases": [
+    "TATASTEEL",
+    "Tata Steel"
    ],
    "block": []
   },
@@ -40,206 +278,24 @@
    "block": []
   },
   {
-   "symbol": "AXISBANK",
-   "press_name": "Axis Bank",
+   "symbol": "TRENT",
+   "press_name": "Trent",
    "aliases": [
-    "AXISBANK",
-    "Axis Bank"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "BAJAJ-AUTO",
-   "press_name": "Bajaj Auto",
-   "aliases": [
-    "BAJAJ-AUTO",
-    "Bajaj Auto"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "BAJFINANCE",
-   "press_name": "Bajaj Finance",
-   "aliases": [
-    "BAJFINANCE",
-    "Bajaj Finance"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "BAJAJFINSV",
-   "press_name": "Bajaj Finserv",
-   "aliases": [
-    "BAJAJFINSV",
-    "Bajaj Finserv"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "BEL",
-   "press_name": "Bharat Electronics",
-   "aliases": [
-    "BEL",
-    "Bharat Electronics"
+    "TRENT",
+    "Trent",
+    "Trent Ltd",
+    "Westside",
+    "Zudio"
    ],
    "block": [
-    "bel air",
-    "bell"
+    "cricket",
+    "the hundred",
+    "trent bridge",
+    "trent park",
+    "museum",
+    "boult",
+    "rockets"
    ]
-  },
-  {
-   "symbol": "BHARTIARTL",
-   "press_name": "Bharti Airtel",
-   "aliases": [
-    "BHARTIARTL",
-    "Bharti Airtel"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "CIPLA",
-   "press_name": "Cipla",
-   "aliases": [
-    "CIPLA",
-    "Cipla"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "COALINDIA",
-   "press_name": "Coal India",
-   "aliases": [
-    "COALINDIA",
-    "Coal India"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "DRREDDY",
-   "press_name": "Dr Reddys",
-   "aliases": [
-    "DRREDDY",
-    "Dr Reddys",
-    "Dr. Reddy's Laboratories"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "EICHERMOT",
-   "press_name": "Eicher Motors",
-   "aliases": [
-    "EICHERMOT",
-    "Eicher Motors"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "ETERNAL",
-   "press_name": "Eternal",
-   "aliases": [
-    "ETERNAL",
-    "Eternal"
-   ],
-   "block": [
-    "eternal sunshine",
-    "eternals"
-   ]
-  },
-  {
-   "symbol": "GRASIM",
-   "press_name": "Grasim",
-   "aliases": [
-    "GRASIM",
-    "Grasim",
-    "Grasim Industries"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "HCLTECH",
-   "press_name": "HCL Tech",
-   "aliases": [
-    "HCL Tech",
-    "HCL Technologies",
-    "HCLTECH"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "HDFCBANK",
-   "press_name": "HDFC Bank",
-   "aliases": [
-    "HDFC Bank",
-    "HDFCBANK"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "HDFCLIFE",
-   "press_name": "HDFC Life",
-   "aliases": [
-    "HDFC Life",
-    "HDFC Life Insurance Company",
-    "HDFCLIFE"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "HINDALCO",
-   "press_name": "Hindalco",
-   "aliases": [
-    "HINDALCO",
-    "Hindalco",
-    "Hindalco Industries"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "HINDUNILVR",
-   "press_name": "Hindustan Unilever",
-   "aliases": [
-    "HINDUNILVR",
-    "Hindustan Unilever"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "ICICIBANK",
-   "press_name": "ICICI Bank",
-   "aliases": [
-    "ICICI Bank",
-    "ICICIBANK"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "ITC",
-   "press_name": "ITC",
-   "aliases": [
-    "ITC"
-   ],
-   "block": [
-    "itc hotels"
-   ]
-  },
-  {
-   "symbol": "INFY",
-   "press_name": "Infosys",
-   "aliases": [
-    "INFY",
-    "Infosys"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "INDIGO",
-   "press_name": "IndiGo",
-   "aliases": [
-    "INDIGO",
-    "IndiGo",
-    "InterGlobe Aviation"
-   ],
-   "block": []
   },
   {
    "symbol": "JSWSTEEL",
@@ -248,70 +304,30 @@
     "JSW Steel",
     "JSWSTEEL"
    ],
-   "block": []
+   "block": [
+    "jsw energy",
+    "jsw infra",
+    "jsw paints"
+   ]
   },
   {
-   "symbol": "JIOFIN",
-   "press_name": "Jio Financial",
+   "symbol": "BAJAJFINSV",
+   "press_name": "Bajaj Finserv",
    "aliases": [
-    "JIOFIN",
-    "Jio Financial",
-    "Jio Financial Services"
+    "BAJAJFINSV",
+    "Bajaj Finserv"
    ],
-   "block": []
+   "block": [
+    "bajaj finance",
+    "bajaj auto"
+   ]
   },
   {
-   "symbol": "KOTAKBANK",
-   "press_name": "Kotak Mahindra Bank",
+   "symbol": "COALINDIA",
+   "press_name": "Coal India",
    "aliases": [
-    "KOTAKBANK",
-    "Kotak Mahindra Bank"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "LT",
-   "press_name": "Larsen & Toubro",
-   "aliases": [
-    "LT",
-    "Larsen & Toubro"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "M&M",
-   "press_name": "Mahindra & Mahindra",
-   "aliases": [
-    "M&M",
-    "Mahindra & Mahindra"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "MARUTI",
-   "press_name": "Maruti Suzuki",
-   "aliases": [
-    "MARUTI",
-    "Maruti Suzuki",
-    "Maruti Suzuki India"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "MAXHEALTH",
-   "press_name": "Max Healthcare",
-   "aliases": [
-    "MAXHEALTH",
-    "Max Healthcare",
-    "Max Healthcare Institute"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "NTPC",
-   "press_name": "NTPC",
-   "aliases": [
-    "NTPC"
+    "COALINDIA",
+    "Coal India"
    ],
    "block": []
   },
@@ -325,168 +341,12 @@
    "block": []
   },
   {
-   "symbol": "ONGC",
-   "press_name": "ONGC",
+   "symbol": "GRASIM",
+   "press_name": "Grasim",
    "aliases": [
-    "ONGC",
-    "Oil & Natural Gas Corporation"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "POWERGRID",
-   "press_name": "Power Grid",
-   "aliases": [
-    "POWERGRID",
-    "Power Grid",
-    "Power Grid Corporation of India"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "RELIANCE",
-   "press_name": "Reliance Industries",
-   "aliases": [
-    "RELIANCE",
-    "Reliance Industries"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "SBILIFE",
-   "press_name": "SBI Life",
-   "aliases": [
-    "SBI Life",
-    "SBI Life Insurance Company",
-    "SBILIFE"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "SHRIRAMFIN",
-   "press_name": "Shriram Finance",
-   "aliases": [
-    "SHRIRAMFIN",
-    "Shriram Finance"
-   ],
-   "block": [
-    "shriram nene",
-    "asset management",
-    "general insurance",
-    "properties",
-    "tnpl",
-    "madhuri"
-   ]
-  },
-  {
-   "symbol": "SBIN",
-   "press_name": "SBI",
-   "aliases": [
-    "SBI",
-    "SBIN",
-    "State Bank of India"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "SUNPHARMA",
-   "press_name": "Sun Pharma",
-   "aliases": [
-    "SUNPHARMA",
-    "Sun Pharma",
-    "Sun Pharmaceutical Industries"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "TCS",
-   "press_name": "TCS",
-   "aliases": [
-    "TCS",
-    "Tata Consultancy Services"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "TATACONSUM",
-   "press_name": "Tata Consumer",
-   "aliases": [
-    "TATACONSUM",
-    "Tata Consumer",
-    "Tata Consumer Products"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "TMPV",
-   "press_name": "Tata Motors",
-   "aliases": [
-    "TMPV",
-    "Tata Motors",
-    "Tata Motors Passenger Vehicles"
-   ],
-   "block": [
-    "tmcv",
-    "commercial vehicles"
-   ]
-  },
-  {
-   "symbol": "TATASTEEL",
-   "press_name": "Tata Steel",
-   "aliases": [
-    "TATASTEEL",
-    "Tata Steel"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "TECHM",
-   "press_name": "Tech Mahindra",
-   "aliases": [
-    "TECHM",
-    "Tech Mahindra"
-   ],
-   "block": []
-  },
-  {
-   "symbol": "TITAN",
-   "press_name": "Titan Company",
-   "aliases": [
-    "TITAN",
-    "Titan Company"
-   ],
-   "block": [
-    "saturn",
-    "moon",
-    "methane",
-    "attack on titan",
-    "anime",
-    "titanic"
-   ]
-  },
-  {
-   "symbol": "TRENT",
-   "press_name": "Trent",
-   "aliases": [
-    "TRENT",
-    "Trent"
-   ],
-   "block": [
-    "cricket",
-    "hundred",
-    "trent bridge",
-    "trent park",
-    "museum",
-    "rocket",
-    "boult"
-   ]
-  },
-  {
-   "symbol": "ULTRACEMCO",
-   "press_name": "UltraTech Cement",
-   "aliases": [
-    "ULTRACEMCO",
-    "UltraTech Cement"
+    "GRASIM",
+    "Grasim",
+    "Grasim Industries"
    ],
    "block": []
   },
@@ -498,8 +358,8 @@
     "Wipro"
    ],
    "block": [
-    "consumer care",
-    "enterprises"
+    "wipro consumer care",
+    "wipro enterprises"
    ]
   }
  ]
