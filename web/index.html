@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Nifty 50 Levels</title>
-<meta name="description" content="All 50 NIFTY constituents against their 50/100/200-day averages and 52-week range, with RSI and the news behind each move.">
+<title>Levels</title>
+<meta name="description" content="A watchlist of Indian companies against their 50/100/200-day averages and 52-week range, with RSI and the news behind each move.">
 <meta name="theme-color" content="#0A0A0B">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -43,6 +43,7 @@ header.stuck .hair{opacity:1}
 .brand{font-family:Fraunces;font-variation-settings:'wght' 600,'WONK' 1,'opsz' 60;font-size:18px;letter-spacing:-.02em;white-space:nowrap}
 .brand i{color:var(--lime);font-style:normal}
 .idx{text-align:right;line-height:1.25}
+.idx .nm{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
 .idx .v{font-size:15px;font-weight:600}
 .idx .c{font-size:11.5px;font-weight:600}
 .statusline{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--faint);padding:0 0 10px}
@@ -129,7 +130,7 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 <header id="hdr">
   <div class="wrap">
     <div class="top">
-      <div class="brand">Nifty <i>50</i> Levels</div>
+      <div class="brand">Levels<i>.</i></div>
       <div class="idx" id="idx"></div>
     </div>
     <div class="statusline" id="status"><span class="dot"></span><span>Loading…</span></div>
@@ -374,7 +375,11 @@ function render() {
   if (expanded && shown.some(s => s.symbol === expanded)) loadNews(expanded);
 
   if (LIVE?.index) {
-    $('#idx').innerHTML = `<div class="v">${num(LIVE.index.last)}</div>
+    // Name the index. The feed is NIFTY 500 now that the watchlist is not an
+    // index, and an unlabelled number here reads as the NIFTY 50 everyone
+    // assumes — a benchmark that is not the one being shown.
+    $('#idx').innerHTML = `<div class="nm">${esc(LIVE.index.symbol || 'Index')}</div>
+      <div class="v">${num(LIVE.index.last)}</div>
       <div class="c ${dir(LIVE.index.pct)}">${pct(LIVE.index.pct)}</div>`;
   }
   const open = (LIVE?.market_status || '').toLowerCase().includes('open');
@@ -384,10 +389,13 @@ function render() {
      <span>${open ? 'Market open' : 'Market closed'}${LIVE?.as_of ? ' · ' + esc(LIVE.as_of) : ''}</span>
      ${b ? `<span class="sp">${b.advances} up / ${b.declines} down</span>` : ''}`;
 
+  const missing = LIVE?.missing?.length
+    ? `<br><b style="color:#FFB86B">No live price for ${LIVE.missing.map(esc).join(', ')}</b> — outside the NIFTY 500 feed; showing last close.`
+    : '';
   $('#foot').innerHTML =
     `Levels from the ${esc(IND?.as_of || '—')} close · prices from NSE · ${shown.length} of ${rows.length} shown.<br>
      Averages and RSI are computed from daily closes. News is shown near a move, not as its cause.
-     Measurements only — not investment advice, and not SEBI-registered.`;
+     Measurements only — not investment advice, and not SEBI-registered.${missing}`;
 }
 
 /* ---------------- data ---------------- */
@@ -402,7 +410,10 @@ async function loadStatic() {
 
 async function loadLive() {
   try {
-    const r = await fetch(`${API}/api/live`, {cache: 'no-store'});
+    // Ask only for what the watchlist names. The upstream index carries 500
+    // companies; sending 500 rows to a phone every minute would be waste.
+    const syms = (IND?.stocks ?? []).map(s => s.symbol).join(',');
+    const r = await fetch(`${API}/api/live?symbols=${encodeURIComponent(syms)}`, {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     LIVE = await r.json();
   } catch (e) {

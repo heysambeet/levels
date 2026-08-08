@@ -41,7 +41,7 @@ async function fetchUpstream(url, ttl) {
   return res;
 }
 
-async function handleLive() {
+async function handleLive(url) {
   const r = ROUTES.live;
   const res = await fetchUpstream(r.upstream, r.ttl);
   const payload = await res.json();
@@ -51,15 +51,31 @@ async function handleLive() {
   const rows = payload?.data?.data;
   if (!Array.isArray(rows)) throw new Error('unexpected NSE shape');
 
-  const stocks = rows.filter((x) => x.series != null);
+  let stocks = rows.filter((x) => x.series != null);
   const index = rows.find((x) => x.series == null) || null;
-  if (stocks.length < 45) throw new Error(`only ${stocks.length} constituents`);
+  if (stocks.length < 100) throw new Error(`only ${stocks.length} constituents`);
+
+  // Filter to the caller's watchlist so a phone downloads ~30 rows, not 500.
+  // Symbols the index does not carry are reported rather than dropped —
+  // silently returning fewer stocks than were asked for is how a watchlist
+  // loses a company without anyone noticing.
+  const want = (url.searchParams.get('symbols') || '')
+    .split(',').map((s) => s.trim().toUpperCase()).filter(Boolean);
+  let missing = [];
+  if (want.length) {
+    const have = new Set(stocks.map((s) => s.symbol));
+    missing = want.filter((s) => !have.has(s));
+    const wanted = new Set(want);
+    stocks = stocks.filter((s) => wanted.has(s.symbol));
+  }
 
   return json(
     {
       as_of: payload.data.timestamp ?? null,
       market_status: payload.data.marketStatus?.marketStatus ?? null,
       breadth: payload.data.aduCount ?? null,
+      universe: payload.data.data?.length ?? null,
+      missing,
       index: index && {
         symbol: index.symbol,
         last: index.lastPrice,
@@ -108,7 +124,7 @@ export default {
 
     const url = new URL(request.url);
     try {
-      if (url.pathname === ROUTES.live.path) return await handleLive();
+      if (url.pathname === ROUTES.live.path) return await handleLive(url);
       if (url.pathname === ROUTES.news.path) return await handleNews(url);
       if (url.pathname === '/health') return json({ ok: true });
       return json({ error: 'not found' }, { status: 404 });

@@ -16,12 +16,18 @@ export const BROWSER_UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36';
 
 export const ROUTES = {
-  // All 50 constituents with live price, change% and 52-week range, in one
-  // request. No cookie warm-up and no Referer needed — only the UA.
+  // Live price, change% and 52-week range for a whole index in one request.
+  // No cookie warm-up and no Referer needed — only the UA.
+  //
+  // NIFTY 500, not NIFTY 50, because the watchlist is no longer an index: it
+  // may name any NSE company. The 500 covers every NIFTY 50 member plus the
+  // large- and mid-caps a watchlist realistically reaches for, still in a
+  // single ~300 KB call. The Worker filters to the requested symbols before
+  // replying, so the phone receives ~30 rows rather than 500.
   live: {
     path: '/api/live',
     upstream:
-      'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%2050',
+      'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%20500',
     // NSE republishes every ~5s. Twenty seconds keeps the page honest while
     // making the cache, not NSE, absorb a refresh loop.
     ttl: 20,

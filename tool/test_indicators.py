@@ -215,8 +215,16 @@ def test_generated_file():
         print("  (skipping generated-file checks — run build_indicators.py first)")
         return
     d = json.loads(p.read_text())
-    if d["count"] < 45:
-        fail(f"only {d['count']} stocks in generated file")
+    from symbols import load_watchlist
+    wl = load_watchlist()
+    if d["count"] != len(wl["symbols"]):
+        fail(f"generated file has {d['count']} stocks, watchlist names {len(wl['symbols'])}")
+    if d["count"] > d.get("watchlist_max", 30):
+        fail(f"{d['count']} stocks exceeds the watchlist max {d.get('watchlist_max')}")
+    got = {s["symbol"] for s in d["stocks"]}
+    missing = [s for s in wl["symbols"] if s not in got]
+    if missing:
+        fail(f"watchlist symbols absent from the generated file: {missing}")
     for s in d["stocks"]:
         if s["insufficient"]:
             fail(f"{s['symbol']}: unexpected missing indicators {s['insufficient']}")
@@ -240,8 +248,9 @@ def test_live_cross_check_against_nse():
     if not p.exists():
         return
     ours = {s["symbol"]: s for s in json.loads(p.read_text())["stocks"]}
+    # NIFTY 500, because the watchlist may name companies outside the NIFTY 50.
     url = ("https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi"
-           "?functionName=getIndicesData&symbol=NIFTY%2050")
+           "?functionName=getIndicesData&symbol=NIFTY%20500")
     req = urllib.request.Request(url, headers={"User-Agent": UA})
     rows = json.loads(urllib.request.urlopen(req, timeout=30).read())["data"]["data"]
     checked = mismatched = 0
@@ -258,8 +267,8 @@ def test_live_cross_check_against_nse():
                 mismatched += 1
                 fail(f"{r['symbol']} 52w {ourk}: ours {a} vs NSE {b}")
     print(f"  cross-checked {checked} symbols against NSE, {mismatched} mismatches")
-    if checked < 40:
-        fail(f"only cross-checked {checked} symbols")
+    if checked < len(ours) * 0.8:
+        fail(f"only cross-checked {checked} of {len(ours)} — is the watchlist outside NIFTY 500?")
 
 
 def main() -> int:

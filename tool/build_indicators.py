@@ -5,9 +5,13 @@ These derive from *daily* candles, so they change once per session. Computing
 them intraday buys nothing — the page reads the live price from NSE and
 compares it against these precomputed levels.
 
+Covers whatever `tool/watchlist.json` names. That list is an arbitrary set of
+NSE companies, not an index: names outside the NIFTY 50 are expected, and
+NIFTY 50 members may be absent.
+
 Sources, both free and unauthenticated:
-  - Constituents + ISINs: NSE's published NIFTY 50 list (archives CSV)
-  - Daily candles:        Upstox historical-candle
+  - Symbol -> ISIN: Upstox instrument master (see tool/symbols.py)
+  - Daily candles:  Upstox historical-candle
 
 Run after the close:  python3 tool/build_indicators.py
 """
@@ -15,8 +19,6 @@ Run after the close:  python3 tool/build_indicators.py
 from __future__ import annotations
 
 import argparse
-import csv
-import io
 import json
 import sys
 import time
@@ -27,6 +29,15 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from symbols import (  # noqa: E402
+    UnresolvedSymbols,
+    load_instrument_map,
+    load_watchlist,
+    resolve,
+    titlecase,
+)
+
 IST = ZoneInfo("Asia/Kolkata")
 
 # Upstox and NSE both reject non-browser agents. Upstox answers 403; NSE kills
@@ -35,27 +46,24 @@ IST = ZoneInfo("Asia/Kolkata")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
 UPSTOX = "https://api.upstox.com/v2/historical-candle"
-CONSTITUENTS_CSV = "https://archives.nseindia.com/content/indices/ind_nifty50list.csv"
 
 # 500 calendar days ≈ 338 trading bars. A 200DMA needs 200 and a 52-week range
 # needs ~250; 400 days left only ~21 bars of slack, and the wider window is the
 # same single request.
 HISTORY_DAYS = 500
 RSI_PERIOD = 14
-MIN_BARS = {"dma50": 50, "dma100": 100, "dma200": 200, "rsi14": RSI_PERIOD + 1}
 # Sanity floor for the 52-week window. NOT a "one year of sessions" count —
 # 365 calendar days holds ~247 Indian trading sessions after holidays, so
 # requiring 250 rejects every stock. Coverage is tested by whether the series
 # reaches back past the cutoff; this only catches a series full of holes.
 MIN_BARS_52W = 200
 
-# Serial, with a small gap. Fanning all 50 out in parallel trips Cloudflare
-# rate limiting on Upstox and earns a measured 573-second ban; serially the
-# same 50 take under three seconds.
+# Serial, with a small gap. Fanning requests out in parallel trips Cloudflare
+# rate limiting on Upstox and earns a measured 573-second ban; serially even
+# fifty take under three seconds.
 REQUEST_GAP_S = 0.06
 
 TOOL_DIR = Path(__file__).resolve().parent
-FALLBACK_CONSTITUENTS = TOOL_DIR / "nifty50_constituents.json"
 DEFAULT_OUT = TOOL_DIR.parent / "web" / "data" / "indicators.json"
 
 
@@ -70,44 +78,6 @@ def get(url: str, tries: int = 3, timeout: int = 30) -> bytes:
             last = e
             time.sleep(1.5 * (attempt + 1))
     raise RuntimeError(f"GET failed after {tries} tries: {url}: {last}")
-
-
-# ---------------------------------------------------------------- constituents
-
-def fetch_constituents() -> tuple[list[dict], str]:
-    """The NIFTY 50 as NSE publishes it, with ISINs.
-
-    Deliberately fetched every run rather than hardcoded. Corporate actions
-    mint new ISINs and retire symbols — TATAMOTORS ceased to exist after its
-    demerger, and a pinned list would have gone on requesting a dead
-    instrument and quietly dropping a constituent.
-    """
-    try:
-        text = get(CONSTITUENTS_CSV).decode("utf-8-sig")
-        rows = [r for r in csv.DictReader(io.StringIO(text)) if r.get("Series") == "EQ"]
-        if len(rows) < 45:
-            raise RuntimeError(f"only {len(rows)} rows")
-        out = [
-            {
-                "symbol": r["Symbol"].strip(),
-                "name": r["Company Name"].strip(),
-                "industry": r["Industry"].strip(),
-                "isin": r["ISIN Code"].strip(),
-            }
-            for r in rows
-        ]
-        FALLBACK_CONSTITUENTS.write_text(
-            json.dumps(
-                {"source": CONSTITUENTS_CSV, "fetched_on": datetime.now(IST).date().isoformat(),
-                 "constituents": [{**c, "instrument_key": "NSE_EQ|" + c["isin"]} for c in out]},
-                indent=2,
-            ) + "\n"
-        )
-        return out, "live"
-    except Exception as e:
-        print(f"  WARN constituents fetch failed ({e}); using last snapshot", file=sys.stderr)
-        snap = json.loads(FALLBACK_CONSTITUENTS.read_text())
-        return snap["constituents"], f"snapshot {snap['fetched_on']}"
 
 
 # ---------------------------------------------------------------- candles
@@ -202,8 +172,7 @@ def build(sym: str, meta: dict, bars: list[dict]) -> dict:
     asof = date.fromisoformat(last["date"])
     row = {
         "symbol": sym,
-        "name": meta["name"],
-        "industry": meta["industry"],
+        "name": meta.get("name") or titlecase(meta.get("registered_name", "")),
         "isin": meta["isin"],
         "as_of": last["date"],
         "close": round(last["close"], 2),
@@ -233,13 +202,21 @@ def main() -> int:
     args = ap.parse_args()
 
     started = time.time()
-    constituents, origin = fetch_constituents()
-    print(f"constituents: {len(constituents)} ({origin})")
+    wl = load_watchlist()
+    print(f"watchlist: {len(wl['symbols'])} symbols (max {wl['max']})"
+          f"{'  [PLACEHOLDER — awaiting the real list]' if wl['placeholder'] else ''}")
+    try:
+        targets = resolve(wl["symbols"], load_instrument_map())
+    except UnresolvedSymbols as e:
+        # Stopping is the point. Skipping would hand back a watchlist quietly
+        # shorter than the one that was asked for.
+        print(f"ERROR {e}", file=sys.stderr)
+        return 2
     if args.limit:
-        constituents = constituents[: args.limit]
+        targets = targets[: args.limit]
 
     rows, failed = [], []
-    for c in constituents:
+    for c in targets:
         try:
             bars = fetch_candles(c["isin"])
             rows.append(build(c["symbol"], c, bars))
@@ -248,8 +225,10 @@ def main() -> int:
             print(f"  WARN {c['symbol']}: {e}", file=sys.stderr)
         time.sleep(REQUEST_GAP_S)
 
-    if len(rows) < 45:
-        print(f"only {len(rows)} of {len(constituents)} resolved — refusing to write a partial sheet",
+    # Every named company must appear. A watchlist is explicit, so a missing
+    # name is a failure rather than an acceptable gap.
+    if failed:
+        print(f"{len(failed)} of {len(targets)} failed to fetch: {', '.join(failed)}",
               file=sys.stderr)
         return 1
 
@@ -258,7 +237,8 @@ def main() -> int:
     out = {
         "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
         "as_of": max(r["as_of"] for r in rows),
-        "constituent_source": origin,
+        "watchlist_max": wl["max"],
+        "placeholder_watchlist": wl["placeholder"],
         "count": len(rows),
         "failed": failed,
         "stocks": rows,

@@ -91,18 +91,30 @@ def parse_rss(xml: str, limit: int = 25) -> list[dict]:
     return out
 
 
-def shape_live(payload: dict) -> dict:
+def shape_live(payload: dict, want: list[str] | None = None) -> dict:
     rows = (payload.get("data") or {}).get("data")
     if not isinstance(rows, list):
         raise RuntimeError("unexpected NSE shape")
     stocks = [r for r in rows if r.get("series") is not None]
     index = next((r for r in rows if r.get("series") is None), None)
-    if len(stocks) < 45:
+    if len(stocks) < 100:
         raise RuntimeError(f"only {len(stocks)} constituents")
+    universe = len(rows)
+
+    # Filter to the caller's watchlist so a phone downloads ~30 rows, not 500.
+    # Symbols the index does not carry are reported rather than dropped.
+    missing: list[str] = []
+    if want:
+        have = {s["symbol"] for s in stocks}
+        missing = [s for s in want if s not in have]
+        stocks = [s for s in stocks if s["symbol"] in set(want)]
+
     return {
         "as_of": payload["data"].get("timestamp"),
         "market_status": (payload["data"].get("marketStatus") or {}).get("marketStatus"),
         "breadth": payload["data"].get("aduCount"),
+        "universe": universe,
+        "missing": missing,
         "index": index and {"symbol": index["symbol"], "last": index["lastPrice"],
                             "change": index["change"], "pct": index["pChange"]},
         "stocks": [
@@ -139,7 +151,10 @@ class Handler(SimpleHTTPRequestHandler):
         try:
             if url.path == ROUTES["live"]["path"]:
                 raw = cached_get(ROUTES["live"]["upstream"], ROUTES["live"]["ttl"])
-                return self._send(shape_live(json.loads(raw)))
+                want = [s.strip().upper()
+                        for s in urllib.parse.parse_qs(url.query).get("symbols", [""])[0].split(",")
+                        if s.strip()]
+                return self._send(shape_live(json.loads(raw), want))
             if url.path == ROUTES["news"]["path"]:
                 q = urllib.parse.parse_qs(url.query).get("q", [""])[0]
                 if not q:
