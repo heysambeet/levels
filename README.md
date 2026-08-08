@@ -146,6 +146,12 @@ a wrong number, not an error.
   number from a short window.** A newly relisted company would otherwise show
   a confident, wrong 200-day average.
 - **One route table, two proxies.** `test_proxy_parity.py` fails if they drift.
+- **Work Sans for body, Fraunces for headings.** Work Sans replaced Inter on
+  the owner's instruction (2026-08-08). It was checked for `tnum` and `zero`
+  first: this page is columns of numbers, and a proportional-figure face makes
+  prices reflow on every refresh. Work Sans has both. Inter's `cv05`/`ss03`
+  were dropped rather than carried over — those tags address different
+  glyphs in Work Sans.
 - **Lime is for calls to action only** — never for selected chips or
   highlighted figures. Selection is carried by surface lightness and weight.
 - **Green = up, red = down** (Indian convention), as a data layer kept
