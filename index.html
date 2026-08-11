@@ -37,7 +37,10 @@ body{
   padding-bottom:calc(28px + var(--safe-b));
   overscroll-behavior-y:contain;
 }
-.wrap{max-width:560px;margin:0 auto;padding:0 var(--pad)}
+/* Desktop gets the phone layout, clamped to a centred column — same rule
+   Market Nudge locked. 430px is the design-target phone width, so the page
+   is one layout everywhere rather than a mobile one and a desktop one. */
+.wrap{max-width:430px;margin:0 auto;padding:0 var(--pad)}
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 
 /* ---------------- chrome ---------------- */
@@ -127,7 +130,6 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 .skel{height:96px;border-radius:12px;background:linear-gradient(90deg,var(--card) 25%,var(--raised) 50%,var(--card) 75%);background-size:200% 100%;animation:sh 1.3s infinite}
 @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
 @media (prefers-reduced-motion:reduce){.skel{animation:none}*{transition:none!important}}
-@media (min-width:520px){:root{--pad:18px}}
 </style>
 </head>
 <body>
