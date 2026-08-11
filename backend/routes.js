@@ -28,6 +28,13 @@ export const ROUTES = {
     path: '/api/live',
     upstream:
       'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%20500',
+    // The header displays the NIFTY 50 — the number everyone means by "the
+    // market" (owner's call, 2026-08-11) — but the 500's own index row is
+    // the 500. So the index, breadth and timestamp come from a second call
+    // to the same proven endpoint, while constituents stay on the 500 for
+    // watchlist coverage.
+    index_upstream:
+      'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%2050',
     // NSE republishes every ~5s. Twenty seconds keeps the page honest while
     // making the cache, not NSE, absorb a refresh loop.
     ttl: 20,

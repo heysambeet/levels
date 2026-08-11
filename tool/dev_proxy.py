@@ -39,12 +39,16 @@ def load_routes() -> tuple[dict, str]:
             raise RuntimeError(f"could not parse route '{name}' from {ROUTES_JS}")
         b = block.group(1)
         path = re.search(r"path:\s*'([^']+)'", b)
-        upstream = re.search(r"upstream:\s*\n?\s*'([^']+)'", b)
+        # (?<!_) so `index_upstream:` does not satisfy the `upstream:` match.
+        upstream = re.search(r"(?<!_)\bupstream:\s*\n?\s*'([^']+)'", b)
         ttl = re.search(r"ttl:\s*(\d+)", b)
         if not (path and upstream and ttl):
             raise RuntimeError(f"route '{name}' is missing path/upstream/ttl")
         routes[name] = {"path": path.group(1), "upstream": upstream.group(1),
                         "ttl": int(ttl.group(1))}
+        extra = re.search(r"index_upstream:\s*\n?\s*'([^']+)'", b)
+        if extra:
+            routes[name]["index_upstream"] = extra.group(1)
     if not ua:
         raise RuntimeError("could not parse BROWSER_UA")
     return routes, ua.group(1)
@@ -95,15 +99,28 @@ def parse_rss(xml: str, limit: int = 25) -> list[dict]:
     return out
 
 
-def shape_live(payload: dict, want: list[str] | None = None) -> dict:
+def shape_live(payload: dict, want: list[str] | None = None,
+               index_payload: dict | None = None) -> dict:
     rows = (payload.get("data") or {}).get("data")
     if not isinstance(rows, list):
         raise RuntimeError("unexpected NSE shape")
     stocks = [r for r in rows if r.get("series") is not None]
-    index = next((r for r in rows if r.get("series") is None), None)
     if len(stocks) < 100:
         raise RuntimeError(f"only {len(stocks)} constituents")
     universe = len(rows)
+
+    # The header shows the NIFTY 50; constituents ride in on the 500, whose
+    # own index row is the 500. Fall back to that row if the second call
+    # failed, rather than blanking the header.
+    idx_rows = (index_payload or {}).get("data", {}).get("data")
+    index = None
+    if isinstance(idx_rows, list):
+        index = next((r for r in idx_rows if r.get("series") is None), None)
+    if index is None:
+        index = next((r for r in rows if r.get("series") is None), None)
+        header = payload["data"]
+    else:
+        header = index_payload["data"]
 
     # Filter to the caller's watchlist so a phone downloads ~30 rows, not 500.
     # Symbols the index does not carry are reported rather than dropped.
@@ -114,9 +131,9 @@ def shape_live(payload: dict, want: list[str] | None = None) -> dict:
         stocks = [s for s in stocks if s["symbol"] in set(want)]
 
     return {
-        "as_of": payload["data"].get("timestamp"),
-        "market_status": (payload["data"].get("marketStatus") or {}).get("marketStatus"),
-        "breadth": payload["data"].get("aduCount"),
+        "as_of": header.get("timestamp"),
+        "market_status": (header.get("marketStatus") or {}).get("marketStatus"),
+        "breadth": header.get("aduCount"),
         "universe": universe,
         "missing": missing,
         "index": index and {"symbol": index["symbol"], "last": index["lastPrice"],
@@ -158,7 +175,12 @@ class Handler(SimpleHTTPRequestHandler):
                 want = [s.strip().upper()
                         for s in urllib.parse.parse_qs(url.query).get("symbols", [""])[0].split(",")
                         if s.strip()]
-                return self._send(shape_live(json.loads(raw), want))
+                try:
+                    idx_raw = cached_get(ROUTES["live"]["index_upstream"], ROUTES["live"]["ttl"])
+                    idx = json.loads(idx_raw)
+                except Exception:
+                    idx = None      # header falls back to the 500's index row
+                return self._send(shape_live(json.loads(raw), want, idx))
             if url.path == ROUTES["news"]["path"]:
                 q = urllib.parse.parse_qs(url.query).get("q", [""])[0]
                 if not q:

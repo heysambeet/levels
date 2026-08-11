@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import sys
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -84,6 +85,34 @@ def test_dev_proxy_and_worker_shape_the_same_response():
     for env in ("as_of", "market_status", "breadth", "index", "stocks"):
         if env not in worker or env not in dev:
             fail(f"envelope key '{env}' missing from one side")
+
+
+def test_both_read_the_index_from_the_nifty_50_call():
+    """The header shows the NIFTY 50 while constituents come from the 500.
+    If either side forgets the second call it silently shows the 500's level
+    under the NIFTY 50 label — a wrong number that looks entirely normal."""
+    from dev_proxy import ROUTES
+    live = ROUTES.get("live", {})
+    idx = live.get("index_upstream")
+    if not idx:
+        fail("dev_proxy did not parse index_upstream from the shared table")
+    else:
+        # Compare the decoded symbol, not the raw URL: "NIFTY%2050" is a
+        # substring of "NIFTY%20500", so a plain `in` check passes happily
+        # on the very swap this test exists to catch.
+        sym = urllib.parse.parse_qs(urllib.parse.urlparse(idx).query).get("symbol", [""])[0]
+        if sym != "NIFTY 50":
+            fail(f"index_upstream must fetch 'NIFTY 50', got {sym!r}")
+    up = live.get("upstream", "")
+    up_sym = urllib.parse.parse_qs(urllib.parse.urlparse(up).query).get("symbol", [""])[0]
+    if up_sym != "NIFTY 500":
+        fail(f"constituent upstream must fetch 'NIFTY 500', got {up_sym!r}")
+    worker = WORKER_JS.read_text()
+    if "index_upstream" not in worker:
+        fail("worker.js does not use index_upstream — header would show the 500")
+    dev = (ROOT / "tool" / "dev_proxy.py").read_text()
+    if "index_upstream" not in dev:
+        fail("dev_proxy.py does not use index_upstream — header would show the 500")
 
 
 def test_rss_parsers_agree_on_a_real_document():

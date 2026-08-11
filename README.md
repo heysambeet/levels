@@ -88,8 +88,16 @@ Two data paths, because they change at different rates:
 it directly however well-formed the request. That is the Worker's entire job.
 Upstox *does* send CORS, which is why historical candles are not proxied.
 
-The live feed reads **NIFTY 500**, not NIFTY 50, because the watchlist may name
-any company. The 500 covers every NIFTY 50 member plus the large- and mid-caps
+The header shows the **NIFTY 50** — the number people mean by "the market"
+— but constituents come from the **NIFTY 500**, whose own index row is the
+500. So `/api/live` makes two calls to the same endpoint in parallel: the 500
+for stocks, the 50 for the header figure, its breadth and its timestamp. If
+the second call fails the header falls back to the 500's row, carrying its
+own label, because showing one index's level under another's name is worse
+than showing neither.
+
+The constituent feed reads NIFTY 500 because the watchlist may name any
+company. The 500 covers every NIFTY 50 member plus the large- and mid-caps
 a watchlist realistically reaches for, still in one ~300 KB call. The proxy
 filters to the requested symbols before replying, so a phone receives ~30 rows
 rather than 500 — and any symbol the index does not carry is **reported**, not

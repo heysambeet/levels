@@ -53,7 +53,12 @@ async function fetchUpstream(url, ttl) {
 
 async function handleLive(url) {
   const r = ROUTES.live;
-  const res = await fetchUpstream(r.upstream, r.ttl);
+  // Both calls in parallel — they are independent, and the header should not
+  // wait on the constituent payload (which is ~10x larger).
+  const [res, idxRes] = await Promise.all([
+    fetchUpstream(r.upstream, r.ttl),
+    fetchUpstream(r.index_upstream, r.ttl).catch(() => null),
+  ]);
   const payload = await res.json();
 
   // NSE nests the rows one level deeper than the envelope suggests, and the
@@ -62,8 +67,27 @@ async function handleLive(url) {
   if (!Array.isArray(rows)) throw new Error('unexpected NSE shape');
 
   let stocks = rows.filter((x) => x.series != null);
-  const index = rows.find((x) => x.series == null) || null;
   if (stocks.length < 100) throw new Error(`only ${stocks.length} constituents`);
+
+  // Prefer the NIFTY 50 payload for the header. If that call failed, fall
+  // back to the 500's own index row rather than blanking the header — but
+  // never silently relabel one index with the other's number, which is why
+  // the symbol travels with the figure.
+  let idxPayload = null;
+  if (idxRes) {
+    try {
+      idxPayload = await idxRes.json();
+    } catch {
+      idxPayload = null;
+    }
+  }
+  const idxRows = idxPayload?.data?.data;
+  const index =
+    (Array.isArray(idxRows) ? idxRows.find((x) => x.series == null) : null) ||
+    rows.find((x) => x.series == null) ||
+    null;
+  // Breadth and timestamp belong to whichever index the header is showing.
+  const headerData = idxRows ? idxPayload.data : payload.data;
 
   // Filter to the caller's watchlist so a phone downloads ~30 rows, not 500.
   // Symbols the index does not carry are reported rather than dropped —
@@ -81,9 +105,9 @@ async function handleLive(url) {
 
   return json(
     {
-      as_of: payload.data.timestamp ?? null,
-      market_status: payload.data.marketStatus?.marketStatus ?? null,
-      breadth: payload.data.aduCount ?? null,
+      as_of: headerData.timestamp ?? null,
+      market_status: headerData.marketStatus?.marketStatus ?? null,
+      breadth: headerData.aduCount ?? null,
       universe: payload.data.data?.length ?? null,
       missing,
       index: index && {
