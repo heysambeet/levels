@@ -1,0 +1,68 @@
+# Hosts web/ on GitHub Pages, and keeps the daily indicator layer fresh.
+#
+# Two triggers, two jobs-in-one:
+#   push            — deploy whatever is committed (indicators as they are)
+#   schedule        — weekday evenings: rebuild indicators + aliases from the
+#                     day's close, commit if changed, then deploy
+#
+# GitHub cron is UTC with STANDARD day numbering (0=Sun..6=Sat), so Mon–Fri
+# really is 1-5 here — unlike Cloudflare cron, where 1-5 would mean Sun–Thu.
+# 13:45 UTC = 19:15 IST, comfortably after the 15:30 close so the daily bar
+# has landed at Upstox.
+#
+# A failed scheduled build deploys nothing: the page keeps the last good
+# data, and its footer names the session it came from, so staleness is
+# visible rather than silent.
+
+name: pages
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "45 13 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # On scheduled and manual runs, refresh the daily data first.
+      # (Python 3.12 with zoneinfo ships on the runner; the tools are
+      # deliberately stdlib-only so nothing is installed here.)
+      - name: Rebuild indicators from today's close
+        if: github.event_name != 'push'
+        run: |
+          python3 tool/build_indicators.py
+          python3 tool/build_aliases.py
+          python3 tool/test_indicators.py
+          git config user.name "levels-data"
+          git config user.email "actions@users.noreply.github.com"
+          git add web/data
+          if ! git diff --cached --quiet; then
+            git commit -m "data: refresh to the latest close"
+            git push
+          fi
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

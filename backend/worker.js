@@ -29,10 +29,20 @@ function json(body, { status = 200, ttl = 0 } = {}) {
 }
 
 async function fetchUpstream(url, ttl) {
-  const res = await fetch(url, {
-    headers: { 'User-Agent': BROWSER_UA, Accept: '*/*' },
-    cf: ttl ? { cacheTtl: ttl, cacheEverything: true } : undefined,
-  });
+  // Google News 5xxes Workers egress in flaps — measured on this account:
+  // one query 0/6 while another passes 6/6 the same minute, matching what
+  // market-nudge recorded in 2026. Flapping yields to retries; a genuinely
+  // blocked query still fails after three, which is the honest outcome.
+  let res;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    res = await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA, Accept: '*/*' },
+      // Cache only successes: 5xx must never be pinned for `ttl` seconds.
+      cf: ttl ? { cacheTtl: ttl, cacheEverything: true, cacheTtlByStatus: { '500-599': 0 } } : undefined,
+    });
+    if (res.ok || res.status < 500) break;
+    await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+  }
   if (!res.ok) {
     // Distinguish "upstream said no" from "proxy is broken". Collapsing the
     // two makes an NSE outage look like a bug in this Worker.

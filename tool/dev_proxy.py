@@ -56,6 +56,10 @@ _lock = threading.Lock()
 
 
 def cached_get(url: str, ttl: int) -> bytes:
+    # Deliberately no retry here, unlike the Worker: Google News's 5xx flap
+    # is specific to Cloudflare egress. Residential egress was measured clean
+    # (157 requests, zero failures), so a retry loop would only hide real
+    # local errors.
     now = time.time()
     with _lock:
         hit = _cache.get(url)

@@ -17,6 +17,26 @@ measurements rather than conclusions — see [Not advice](#not-advice).
 
 > Working title. The repository name is not final, and neither is this one.
 
+## Where it runs
+
+**Temporary hosting until the domain is chosen** (owner's call, 2026-08-11):
+
+| Piece | Where | Why |
+|---|---|---|
+| Page | GitHub Pages, from this repo | "Host in Git" — deployed by `.github/workflows/pages.yml` on every push |
+| `/api/*` | Cloudflare Worker `levels-proxy` | GitHub Pages is static-only and cannot run the NSE proxy |
+| Daily data | The same workflow, weekdays 19:15 IST | Rebuilds indicators from the close, commits, redeploys |
+
+The page picks its API base by origin: same-origin on localhost (dev proxy),
+the Worker URL otherwise. When the real domain arrives, page and Worker move
+behind one origin and the temporary split disappears.
+
+Worker deploys normally use `cd backend && npx wrangler deploy`. This machine
+currently has no node, so `scripts/deploy_worker_api.py` does the same thing
+over the Cloudflare HTTP API — including carefully writing back the rotated
+OAuth refresh token, without which every later `wrangler` run on this machine
+would fail.
+
 ---
 
 ## Run it
