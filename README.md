@@ -15,8 +15,6 @@ not serve that loop stays out.
 Personal, mobile-web, ₹0/month. Not SEBI-registered, and it reports
 measurements rather than conclusions — see [Not advice](#not-advice).
 
-> Working title. The repository name is not final, and neither is this one.
-
 ## Where it runs
 
 **Temporary hosting until the domain is chosen** (owner's call, 2026-08-11):
@@ -166,12 +164,14 @@ a wrong number, not an error.
   number from a short window.** A newly relisted company would otherwise show
   a confident, wrong 200-day average.
 - **One route table, two proxies.** `test_proxy_parity.py` fails if they drift.
-- **Work Sans for body, Fraunces for headings.** Work Sans replaced Inter on
-  the owner's instruction (2026-08-08). It was checked for `tnum` and `zero`
-  first: this page is columns of numbers, and a proportional-figure face makes
-  prices reflow on every refresh. Work Sans has both. Inter's `cv05`/`ss03`
-  were dropped rather than carried over — those tags address different
-  glyphs in Work Sans.
+- **The name is "Levels"** — owner's decision, 2026-08-11. The wordmark is
+  "Levels." with the lime full stop as the one accent spend.
+- **Mulish for the wordmark, Work Sans for everything else.** Both owner's
+  calls. The ask was Avenir from Google Fonts; Avenir is commercial, and
+  Mulish is its closest free equivalent (the Avenir Next stand-in), set at
+  weight 800. Work Sans replaced Inter (2026-08-08) after checking it
+  carries `tnum` and `zero` — a numbers page in a proportional-figure face
+  reflows on every refresh. Fraunces is no longer used in the app.
 - **Lime is for calls to action only** — never for selected chips or
   highlighted figures. Selection is carried by surface lightness and weight.
 - **Green = up, red = down** (Indian convention), as a data layer kept
@@ -182,9 +182,6 @@ a wrong number, not an error.
 - **The watchlist itself.** `tool/watchlist.json` currently holds a
   placeholder — the 30 largest NIFTY 50 names — so the product runs end to
   end. It is flagged `"placeholder": true` and is waiting on the real list.
-- **The name.** "Nifty 50 Levels" no longer describes a product whose
-  watchlist is neither the Nifty 50 nor fifty companies. The page reads
-  "Levels" for now.
 - Alert delivery and the rules that fire one. Confirmed crossings on a
   chosen shortlist is the agreed shape; notifications are the chosen channel,
   which on iPhone means the page must be added to the Home Screen.
