@@ -74,13 +74,27 @@ python3 tool/test_proxy_parity.py
 | `tool/dev_proxy.py` | Local twin of the Worker, plus a static server |
 | `web/index.html` | The page |
 
-Two data paths, because they change at different rates:
+Two data paths, because they change at different rates — and **neither
+depends on someone remembering to rebuild anything**:
 
-- **Once a day** — the averages, RSI and the 52-week range all derive from
-  daily closes, so they move only when a new daily bar prints. Computed after
-  the close and stored.
-- **Live** — price and day change come from NSE on each refresh. One request
-  covers the whole watchlist.
+- **Prices** — NSE republishes roughly every 5s; the proxy caches 5s and the
+  page re-asks every 10s while the market is open. A ticking "updated Xs ago"
+  in the status line turns amber if a refresh is overdue, so the page shows
+  its own staleness instead of looking equally current at one second and one
+  hour.
+- **Levels** — the averages, RSI and 52-week range derive from daily closes,
+  so they move only when a new daily bar prints. `/api/indicators` recomputes
+  them from Upstox on demand and caches for an hour, which means they always
+  reflect the newest printed bar rather than the last deploy. The committed
+  `web/data/indicators.json` is the watchlist manifest and the fallback: the
+  page paints from it instantly, then swaps in the live figures.
+
+**There are deliberately two implementations of the indicator math** — Python
+in `tool/build_indicators.py` (the reference, and what the tests exercise) and
+JavaScript in the Worker (so levels stay current without a rebuild). That is a
+real drift risk taken for a real gain, and `tool/test_worker_indicators.py`
+compares the deployed Worker against a fresh local computation, symbol by
+symbol, failing on any disagreement beyond rounding.
 
 ### Why there is a proxy
 

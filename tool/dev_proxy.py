@@ -16,6 +16,8 @@ import re
 import sys
 import threading
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -23,6 +25,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+IST = ZoneInfo("Asia/Kolkata")
 ROOT = Path(__file__).resolve().parent.parent
 WEB = ROOT / "web"
 ROUTES_JS = ROOT / "backend" / "routes.js"
@@ -33,7 +36,7 @@ def load_routes() -> tuple[dict, str]:
     src = ROUTES_JS.read_text()
     ua = re.search(r"BROWSER_UA\s*=\s*\n?\s*'([^']+)'", src)
     routes = {}
-    for name in ("live", "news"):
+    for name in ("live", "indicators", "news"):
         block = re.search(rf"\b{name}:\s*\{{(.*?)\n  \}},", src, re.S)
         if not block:
             raise RuntimeError(f"could not parse route '{name}' from {ROUTES_JS}")
@@ -150,6 +153,41 @@ def shape_live(payload: dict, want: list[str] | None = None,
     }
 
 
+_ind_cache: tuple[float, dict] | None = None
+
+
+def local_indicators() -> dict:
+    """Recompute the daily layer locally, cached for the route's own TTL."""
+    global _ind_cache
+    ttl = ROUTES["indicators"]["ttl"]
+    if _ind_cache and time.time() - _ind_cache[0] < ttl:
+        return _ind_cache[1]
+
+    from build_indicators import build, fetch_candles
+    from symbols import load_instrument_map, load_watchlist, resolve
+
+    wl = load_watchlist()
+    rows, failed = [], []
+    for t in resolve(wl["symbols"], load_instrument_map()):
+        try:
+            rows.append(build(t["symbol"], t, fetch_candles(t["isin"])))
+        except Exception:
+            failed.append(t["symbol"])
+        time.sleep(0.06)          # serial; parallel fan-out earns a 573s ban
+    out = {
+        "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
+        "as_of": max((r["as_of"] for r in rows), default=None),
+        "count": len(rows),
+        "source": "dev_proxy",
+        "watchlist_max": wl["max"],
+        "placeholder_watchlist": wl["placeholder"],
+        "failed": failed,
+        "stocks": sorted(rows, key=lambda r: r["symbol"]),
+    }
+    _ind_cache = (time.time(), out)
+    return out
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(WEB), **kw)
@@ -189,6 +227,14 @@ class Handler(SimpleHTTPRequestHandler):
                                  ROUTES["news"]["ttl"])
                 items = parse_rss(raw.decode("utf-8", "replace"))
                 return self._send({"query": q, "count": len(items), "items": items})
+            if url.path == ROUTES["indicators"]["path"]:
+                # Served from build_indicators.py — the reference
+                # implementation — while the deployed Worker recomputes the
+                # same thing in JavaScript. Dev therefore exercises the same
+                # page code path as production, and any disagreement between
+                # the two implementations is what test_worker_indicators.py
+                # exists to catch.
+                return self._send(local_indicators())
             if url.path == "/health":
                 return self._send({"ok": True, "routes": list(ROUTES)})
         except urllib.error.HTTPError as e:

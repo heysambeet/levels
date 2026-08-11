@@ -9,7 +9,7 @@
  * Deploy:  cd backend && npx wrangler deploy
  */
 
-import { ROUTES, BROWSER_UA, parseRss } from './routes.js';
+import { ROUTES, BROWSER_UA, INDICATORS, parseRss } from './routes.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -151,6 +151,138 @@ async function handleNews(url) {
   return json({ query: q, count: items.length, items }, { ttl: r.ttl });
 }
 
+/* ---------------------------------------------------------------- indicators
+ *
+ * This is a second implementation of tool/build_indicators.py, which is a
+ * drift risk taken deliberately: the alternative is levels that are only as
+ * fresh as the last manual rebuild. tool/test_worker_indicators.py compares
+ * the two against live data and fails on any disagreement.
+ */
+
+/** Daily bars, oldest-first. Upstox serves them newest-first, and every
+ *  indicator below is order-sensitive — reversing here, once, is what stops
+ *  a caller silently averaging last year's prices. */
+async function fetchCandles(isin) {
+  const now = new Date();
+  const ist = new Date(now.getTime() + 5.5 * 3600 * 1000);   // IST calendar day
+  const to = ist.toISOString().slice(0, 10);
+  const from = new Date(ist.getTime() - INDICATORS.historyDays * 86400 * 1000)
+    .toISOString().slice(0, 10);
+  const key = encodeURIComponent(`NSE_EQ|${isin}`);
+  const res = await fetchUpstream(
+    `${ROUTES.indicators.candles}/${key}/day/${to}/${from}`, ROUTES.indicators.ttl);
+  const rows = (await res.json())?.data?.candles;
+  if (!Array.isArray(rows) || !rows.length) throw new Error('no candles');
+  return rows
+    .map((r) => ({ date: r[0].slice(0, 10), high: +r[2], low: +r[3], close: +r[4] }))
+    .sort((a, b) => (a.date < b.date ? -1 : 1));
+}
+
+const sma = (c, n) =>
+  c.length >= n ? +(c.slice(-n).reduce((a, b) => a + b, 0) / n).toFixed(2) : null;
+
+/** Wilder's RSI — seeded with a simple mean, then smoothed recursively.
+ *  Not a plain average of the last `period` changes; that is a different
+ *  number that happens to look reasonable. */
+function rsiWilder(c, period = INDICATORS.rsiPeriod) {
+  if (c.length < period + 1) return null;
+  let g = 0, l = 0;
+  for (let i = 1; i <= period; i++) {
+    const d = c[i] - c[i - 1];
+    g += Math.max(d, 0);
+    l += Math.max(-d, 0);
+  }
+  let ag = g / period, al = l / period;
+  for (let i = period + 1; i < c.length; i++) {
+    const d = c[i] - c[i - 1];
+    ag = (ag * (period - 1) + Math.max(d, 0)) / period;
+    al = (al * (period - 1) + Math.max(-d, 0)) / period;
+  }
+  if (al === 0) return ag > 0 ? 100 : 50;
+  return +(100 - 100 / (1 + ag / al)).toFixed(2);
+}
+
+/** High/low over the trailing 365 calendar days.
+ *  Sufficiency is whether the series reaches back PAST the cutoff — not how
+ *  many bars sit inside it. A year holds ~247 Indian sessions, so any
+ *  bar-count threshold near 250 rejects every stock while looking sensible. */
+function window52w(bars) {
+  if (!bars.length) return null;
+  const asof = new Date(bars[bars.length - 1].date + 'T00:00:00Z');
+  const cutoff = new Date(asof.getTime() - 365 * 86400 * 1000).toISOString().slice(0, 10);
+  if (bars[0].date > cutoff) return null;
+  const win = bars.filter((b) => b.date >= cutoff);
+  if (win.length < INDICATORS.minBars52w) return null;
+  const hi = win.reduce((a, b) => (b.high > a.high ? b : a));
+  const lo = win.reduce((a, b) => (b.low < a.low ? b : a));
+  return { high: +hi.high.toFixed(2), high_date: hi.date,
+           low: +lo.low.toFixed(2), low_date: lo.date };
+}
+
+async function handleIndicators() {
+  const r = ROUTES.indicators;
+  // The committed file supplies the watchlist (symbols + ISINs); the numbers
+  // below are recomputed, so changing the watchlist needs no Worker deploy.
+  const manifestRes = await fetchUpstream(r.upstream, 300);
+  const manifest = await manifestRes.json();
+  const targets = (manifest.stocks || []).filter((s) => s.symbol && s.isin);
+  if (!targets.length) throw new Error('manifest has no resolvable stocks');
+
+  const stocks = [];
+  const failed = [];
+  // Strictly serial. Fanning these out in parallel earned a measured
+  // 573-second rate-limit ban; serially the whole watchlist takes ~3s, and
+  // this answer is cached for an hour.
+  for (const t of targets) {
+    try {
+      const bars = await fetchCandles(t.isin);
+      const closes = bars.map((b) => b.close);
+      const last = bars[bars.length - 1];
+      const row = {
+        symbol: t.symbol,
+        name: t.name ?? null,
+        isin: t.isin,
+        as_of: last.date,
+        close: +last.close.toFixed(2),
+        bars: bars.length,
+        dma50: sma(closes, 50),
+        dma100: sma(closes, 100),
+        dma200: sma(closes, 200),
+        rsi14: rsiWilder(closes),
+        week52: window52w(bars),
+      };
+      // An indicator without the history to mean anything is null, never a
+      // number computed from a short window.
+      row.insufficient = ['dma50', 'dma100', 'dma200', 'rsi14']
+        .filter((k) => row[k] == null)
+        .concat(row.week52 == null ? ['week52'] : []);
+      stocks.push(row);
+    } catch {
+      failed.push(t.symbol);
+    }
+  }
+
+  // A watchlist is explicit, so a missing name is a failure, not a gap. Fall
+  // back to the committed file rather than serving a short list.
+  if (stocks.length < targets.length) {
+    throw Object.assign(new Error(`${failed.join(', ')} failed`), { status: 502 });
+  }
+  stocks.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  return json(
+    {
+      generated_at: new Date().toISOString(),
+      as_of: stocks.map((s) => s.as_of).sort().pop(),
+      count: stocks.length,
+      source: 'worker',
+      watchlist_max: manifest.watchlist_max ?? null,
+      placeholder_watchlist: manifest.placeholder_watchlist ?? null,
+      failed,
+      stocks,
+    },
+    { ttl: r.ttl },
+  );
+}
+
 export default {
   async fetch(request) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -159,6 +291,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === ROUTES.live.path) return await handleLive(url);
+      if (url.pathname === ROUTES.indicators.path) return await handleIndicators();
       if (url.pathname === ROUTES.news.path) return await handleNews(url);
       if (url.pathname === '/health') return json({ ok: true });
       return json({ error: 'not found' }, { status: 404 });

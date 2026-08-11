@@ -35,7 +35,7 @@ def fail(m: str) -> None:
 
 def test_dev_proxy_parses_the_shared_table():
     from dev_proxy import ROUTES, BROWSER_UA
-    for name in ("live", "news"):
+    for name in ("live", "indicators", "news"):
         if name not in ROUTES:
             fail(f"dev_proxy did not parse route '{name}'")
             continue

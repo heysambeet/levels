@@ -35,12 +35,28 @@ export const ROUTES = {
     // watchlist coverage.
     index_upstream:
       'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%2050',
-    // NSE republishes every ~5s. Twenty seconds keeps the page honest while
-    // making the cache, not NSE, absorb a refresh loop.
-    ttl: 20,
+    // NSE republishes roughly every 5s. Matching that means the cache absorbs
+    // a refresh loop without ever being the reason the screen lags — anything
+    // longer and the page waits on us rather than on the exchange.
+    ttl: 5,
     type: 'application/json',
   },
 
+  // The daily layer — 50/100/200 DMA, RSI(14), 52-week range — computed here
+  // from Upstox candles instead of being read from a file someone remembered
+  // to rebuild. These move only when a new daily bar prints, so the answer is
+  // cached for hours; the point is that it always reflects the latest close
+  // rather than the last deploy.
+  indicators: {
+    path: '/api/indicators',
+    // The committed file is the watchlist manifest (symbols + ISINs) and the
+    // page's fallback. Reading it here means changing the watchlist needs no
+    // Worker redeploy.
+    upstream: 'https://heysambeet.github.io/levels/data/indicators.json',
+    candles: 'https://api.upstox.com/v2/historical-candle',
+    ttl: 3600,
+    type: 'application/json',
+  },
   // Per-stock headlines. Fetched only for stocks that actually moved, so this
   // is a handful of requests a day, not fifty.
   news: {
@@ -55,7 +71,20 @@ export const ROUTES = {
   },
 };
 
-export const ALLOWED_HOSTS = ['www.nseindia.com', 'news.google.com'];
+// Indicator windows and history depth — kept beside the routes so the Worker
+// and tool/build_indicators.py can be checked against each other.
+export const INDICATORS = {
+  historyDays: 500,   // ≈338 trading bars; a 200DMA needs 200, a 52w range ~250
+  rsiPeriod: 14,
+  minBars52w: 200,
+};
+
+export const ALLOWED_HOSTS = [
+  'www.nseindia.com',
+  'news.google.com',
+  'api.upstox.com',
+  'heysambeet.github.io',
+];
 
 /** Parse an RSS document without a DOM — Workers have no DOMParser. */
 export function parseRss(xml, limit = 25) {
