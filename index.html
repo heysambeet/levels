@@ -61,6 +61,8 @@ header.stuck .hair{opacity:1}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex:0 0 auto}
 .dot.open{background:var(--up);box-shadow:0 0 0 3px color-mix(in srgb,var(--up) 22%,transparent)}
 .statusline .sp{margin-left:auto}
+#age{color:var(--muted)}
+#age.stale{color:#FFB86B}
 
 /* ---------------- controls ---------------- */
 .controls{display:flex;flex-direction:column;gap:8px;padding-bottom:10px}
@@ -171,12 +173,19 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? location.origin
   : 'https://levels-proxy.marketnudge.workers.dev';
-const REFRESH_OPEN_MS = 60_000;      // while the market is open
-const REFRESH_SHUT_MS = 15 * 60_000; // when it is not — the number cannot move
+/* NSE republishes roughly every 5s and the proxy caches for 5s, so 10s is
+   about as live as this data gets — faster only re-fetches the same number. */
+const REFRESH_OPEN_MS = 10_000;      // while the market is open
+const REFRESH_SHUT_MS = 5 * 60_000;  // when it is not — the number cannot move
+/* The daily layer only changes when a new bar prints, but the page may sit
+   open across a close, so re-ask occasionally rather than never. */
+const REFRESH_LEVELS_MS = 30 * 60_000;
 
-let IND = null;      // daily indicators (static, rebuilt after each close)
-let LIVE = null;     // live prices (via proxy)
-let ALIASES = {};    // symbol -> {press_name, aliases, block}
+let IND = null;          // daily levels — committed file, then live-computed
+let LIVE = null;         // live prices (via proxy)
+let ALIASES = {};        // symbol -> {press_name, aliases, block}
+let LEVELS_LIVE = false; // did the live levels call succeed?
+let LAST_TICK = null;    // when the live prices last actually arrived
 let filter = 'all', query = '', expanded = null;
 const newsCache = new Map();
 
@@ -402,13 +411,14 @@ function render() {
   $('#status').innerHTML =
     `<span class="dot ${open ? 'open' : ''}"></span>
      <span>${open ? 'Market open' : 'Market closed'}${LIVE?.as_of ? ' · ' + esc(LIVE.as_of) : ''}</span>
-     ${b ? `<span class="sp">${b.advances} up / ${b.declines} down</span>` : ''}`;
+     <span class="sp">${b ? `${b.advances} up / ${b.declines} down · ` : ''}<span id="age"></span></span>`;
+  paintAge();
 
   const missing = LIVE?.missing?.length
     ? `<br><b style="color:#FFB86B">No live price for ${LIVE.missing.map(esc).join(', ')}</b> — outside the NIFTY 500 feed; showing last close.`
     : '';
   $('#foot').innerHTML =
-    `Levels from the ${esc(IND?.as_of || '—')} close · prices from NSE · ${shown.length} of ${rows.length} shown.<br>
+    `Levels from the ${esc(IND?.as_of || '—')} close${LEVELS_LIVE ? '' : ' (last published build)'} · prices from NSE · ${shown.length} of ${rows.length} shown.<br>
      Averages and RSI are computed from daily closes. News is shown near a move, not as its cause.
      Measurements only — not investment advice, and not SEBI-registered.${missing}`;
 }
@@ -423,6 +433,26 @@ async function loadStatic() {
   ALIASES = Object.fromEntries((ali.stocks || []).map(s => [s.symbol, s]));
 }
 
+/* Levels computed live from the latest close.
+   The committed file is loaded first so the page paints immediately, then
+   this replaces it — the file is only as fresh as the last deploy, and this
+   is always the newest printed bar. Failure keeps the file, which is why
+   the footer names the session the levels came from rather than implying
+   they are current. */
+async function loadLevels() {
+  try {
+    const r = await fetch(`${API}/api/indicators`, {cache: 'no-store'});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const fresh = await r.json();
+    if (fresh?.stocks?.length && (!IND || fresh.as_of >= IND.as_of)) {
+      IND = fresh;
+      LEVELS_LIVE = true;
+    }
+  } catch (e) {
+    console.warn('live levels unavailable, using the committed file', e);
+  }
+}
+
 async function loadLive() {
   try {
     // Ask only for what the watchlist names. The upstream index carries 500
@@ -431,6 +461,7 @@ async function loadLive() {
     const r = await fetch(`${API}/api/live?symbols=${encodeURIComponent(syms)}`, {cache: 'no-store'});
     if (!r.ok) throw new Error('HTTP ' + r.status);
     LIVE = await r.json();
+    LAST_TICK = Date.now();
   } catch (e) {
     // Keep the last good prices rather than blanking the page — a stale number
     // with a visible timestamp beats an empty screen.
@@ -443,6 +474,31 @@ function schedule() {
   clearTimeout(schedule.t);
   schedule.t = setTimeout(async () => { await loadLive(); render(); schedule(); },
                           open ? REFRESH_OPEN_MS : REFRESH_SHUT_MS);
+
+  // The daily layer on its own, much slower clock — it only moves when a new
+  // bar prints, but a page left open across a close should pick it up.
+  clearTimeout(schedule.lv);
+  schedule.lv = setTimeout(async () => { await loadLevels(); render(); },
+                           REFRESH_LEVELS_MS);
+
+  // Tick the "updated Xs ago" readout between fetches, so the page shows its
+  // own staleness rather than looking equally current a second and an hour
+  // after the last successful call.
+  clearInterval(schedule.age);
+  schedule.age = setInterval(paintAge, 1000);
+}
+
+function paintAge() {
+  const el = document.getElementById('age');
+  if (!el || !LAST_TICK) return;
+  const s = Math.round((Date.now() - LAST_TICK) / 1000);
+  el.textContent = s < 2 ? 'just now'
+    : s < 60 ? `${s}s ago`
+    : s < 3600 ? `${Math.round(s / 60)}m ago`
+    : `${Math.round(s / 3600)}h ago`;
+  // Past twice the expected interval something is wrong; say so quietly.
+  const open = (LIVE?.market_status || '').toLowerCase().includes('open');
+  el.classList.toggle('stale', s * 1000 > (open ? REFRESH_OPEN_MS : REFRESH_SHUT_MS) * 2.5);
 }
 
 /* ---------------- events ---------------- */
@@ -483,8 +539,10 @@ addEventListener('visibilitychange', async () => {
     return;
   }
   await loadLive();
-  render();
+  render();                 // paint with the committed levels immediately
   schedule();
+  await loadLevels();       // then swap in levels from the latest close
+  render();
 })();
 </script>
 </body>
