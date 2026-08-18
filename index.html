@@ -57,7 +57,8 @@ header.stuck .hair{opacity:1}
 .idx .nm{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
 .idx .v{font-size:15px;font-weight:600}
 .idx .c{font-size:11.5px;font-weight:600}
-.statusline{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--faint);padding:0 0 10px}
+.statusline{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--faint);padding:0 0 10px;white-space:nowrap;min-width:0}
+.statusline .mk{overflow:hidden;text-overflow:ellipsis}
 .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex:0 0 auto}
 .dot.open{background:var(--up);box-shadow:0 0 0 3px color-mix(in srgb,var(--up) 22%,transparent)}
 .statusline .sp{margin-left:auto}
@@ -408,10 +409,15 @@ function render() {
   }
   const open = (LIVE?.market_status || '').toLowerCase().includes('open');
   const b = LIVE?.breadth;
+  // NSE stamps "18-Aug-2026 10:18:35". Intraday the date is today and only
+  // the clock is news, and printing both wrapped this line onto two ragged
+  // rows on a phone — which is when the line is actually being read.
+  const stamp = (LIVE?.as_of || '').trim();
+  const shown = open ? (stamp.split(' ')[1] || stamp) : stamp;
   $('#status').innerHTML =
     `<span class="dot ${open ? 'open' : ''}"></span>
-     <span>${open ? 'Market open' : 'Market closed'}${LIVE?.as_of ? ' · ' + esc(LIVE.as_of) : ''}</span>
-     <span class="sp">${b ? `${b.advances} up / ${b.declines} down · ` : ''}<span id="age"></span></span>`;
+     <span class="mk">${open ? 'Open' : 'Closed'}${shown ? ' · ' + esc(shown) : ''}</span>
+     <span class="sp">${b ? `${b.advances}↑ ${b.declines}↓ · ` : ''}<span id="age"></span></span>`;
   paintAge();
 
   const missing = LIVE?.missing?.length
