@@ -9,7 +9,7 @@
  * Deploy:  cd backend && npx wrangler deploy
  */
 
-import { ROUTES, BROWSER_UA, INDICATORS, parseRss } from './routes.js';
+import { ROUTES, BROWSER_UA, INDICATORS, EXPECTED_MOVE, parseRss } from './routes.js';
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -283,6 +283,113 @@ async function handleIndicators() {
   );
 }
 
+/* ------------------------------------------------------------ expected move
+ *
+ * How far the options market prices this name moving by expiry. Symmetric
+ * around spot by construction: it says how far, never which way.
+ */
+
+/** Expiry stamps are dates; options stop trading at 15:30 IST that day. */
+function expiryToMs(ddMonYyyy) {
+  const [d, mon, y] = ddMonYyyy.split('-');
+  const months = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+                   Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  if (!(mon in months)) return NaN;
+  // 15:30 IST = 10:00 UTC on the same calendar day.
+  return Date.UTC(+y, months[mon], +d, 10, 0, 0);
+}
+
+async function handleExpectedMove(url) {
+  const symbol = (url.searchParams.get('symbol') || '').trim().toUpperCase();
+  if (!symbol || !/^[A-Z0-9&_-]{1,20}$/.test(symbol)) {
+    return json({ error: 'symbol required' }, { status: 400 });
+  }
+  const kind = url.searchParams.get('type') === 'Indices' ? 'Indices' : 'Equity';
+  const r = ROUTES.expectedMove;
+
+  // Hop 1 — the expiry list. The chain is unusable without one.
+  const ciRes = await fetchUpstream(r.contracts + encodeURIComponent(symbol), r.ttl);
+  const expiries = (await ciRes.json())?.expiryDates;
+  if (!Array.isArray(expiries) || !expiries.length) {
+    return json({ symbol, available: false, reason: 'no listed options' }, { ttl: r.ttl });
+  }
+
+  // Nearest expiry that is not about to degenerate. Inside ~12h the ATM
+  // approximation breaks down — CE and PE implied vols diverge and the
+  // straddle-implied sigma blew out 2.3× in testing.
+  const now = Date.now();
+  const dated = expiries
+    .map((e) => ({ e, days: (expiryToMs(e) - now) / 86400000 }))
+    .filter((x) => isFinite(x.days) && x.days >= EXPECTED_MOVE.minDaysToExpiry)
+    .sort((a, b) => a.days - b.days);
+  if (!dated.length) {
+    return json({ symbol, available: false, reason: 'nearest expiry is inside 12 hours' },
+                { ttl: r.ttl });
+  }
+  const { e: expiry, days: T } = dated[0];
+
+  // Hop 2 — the chain itself.
+  const chainRes = await fetchUpstream(
+    `${r.upstream}?type=${kind}&symbol=${encodeURIComponent(symbol)}&expiry=${encodeURIComponent(expiry)}`,
+    r.ttl);
+  const rec = (await chainRes.json())?.records;
+  const rows = rec?.data;
+  const spot = rec?.underlyingValue;
+
+  // Every failure mode here answers HTTP 200 — a bad symbol, a past expiry
+  // and a non-F&O stock all return an empty array with underlyingValue 0.
+  // The status code is worthless as a health check; the row count is not.
+  if (!Array.isArray(rows) || !rows.length || !spot) {
+    return json({ symbol, available: false, reason: 'no option chain for this name' },
+                { ttl: r.ttl });
+  }
+
+  const atm = rows.reduce((best, row) =>
+    Math.abs(row.strikePrice - spot) < Math.abs(best.strikePrice - spot) ? row : best);
+  const ce = atm.CE || {};
+  const pe = atm.PE || {};
+  const straddle = (ce.lastPrice || 0) + (pe.lastPrice || 0);
+  const ivPct = ((ce.impliedVolatility || 0) + (pe.impliedVolatility || 0)) / 2;
+
+  if (straddle <= 0 || ivPct <= 0) {
+    return json({ symbol, available: false, reason: 'ATM strike has no live quotes' },
+                { ttl: r.ttl });
+  }
+
+  const sigmaStraddle = straddle * EXPECTED_MOVE.straddleToSigma;
+  const sigmaIv = spot * (ivPct / 100) * Math.sqrt(T / 365);
+  // Two independent routes to the same quantity. Agreement is the check that
+  // the chain is internally consistent; disagreement means a stale or thin
+  // ATM print, and is surfaced rather than averaged away.
+  const ratio = sigmaIv > 0 ? sigmaStraddle / sigmaIv : 0;
+  const disagrees = Math.abs(ratio - 1) > EXPECTED_MOVE.maxMethodDisagreement;
+  const sigma = (sigmaStraddle + sigmaIv) / 2;
+
+  return json(
+    {
+      symbol,
+      available: true,
+      expiry,
+      days_to_expiry: +T.toFixed(2),
+      spot,
+      atm_strike: atm.strikePrice,
+      straddle: +straddle.toFixed(2),
+      iv_pct: +ivPct.toFixed(2),
+      sigma: +sigma.toFixed(2),
+      sigma_pct: +((sigma / spot) * 100).toFixed(2),
+      low: +(spot - sigma).toFixed(2),
+      high: +(spot + sigma).toFixed(2),
+      method_ratio: +ratio.toFixed(3),
+      method_disagreement: disagrees,
+      // Stated so the page never has to imply a probability it did not measure.
+      measured_coverage_7d: EXPECTED_MOVE.measuredCoverage7d,
+      chain_timestamp: rec.timestamp ?? null,
+      directional: false,
+    },
+    { ttl: r.ttl },
+  );
+}
+
 export default {
   async fetch(request) {
     if (request.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -292,6 +399,7 @@ export default {
     try {
       if (url.pathname === ROUTES.live.path) return await handleLive(url);
       if (url.pathname === ROUTES.indicators.path) return await handleIndicators();
+      if (url.pathname === ROUTES.expectedMove.path) return await handleExpectedMove(url);
       if (url.pathname === ROUTES.news.path) return await handleNews(url);
       if (url.pathname === '/health') return json({ ok: true });
       return json({ error: 'not found' }, { status: 404 });

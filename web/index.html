@@ -127,6 +127,19 @@ input[type=search]::placeholder{color:var(--faint)}
 .ni a:active{opacity:.6}
 .ni .s{font-size:11px;color:var(--muted);margin-top:2px}
 .quiet{font-size:12.5px;color:var(--faint);font-style:italic}
+.em{display:flex;flex-direction:column;gap:8px}
+.em-band{display:flex;align-items:baseline;justify-content:space-between;gap:8px;
+  background:var(--card);border:1px solid var(--rule);border-radius:9px;padding:9px 11px;
+  font-variant-numeric:tabular-nums}
+.em-lo,.em-hi{font-size:13px;font-weight:600;color:var(--muted)}
+.em-mid{font-size:13.5px;font-weight:600}
+.em-mid i{font-style:normal;color:var(--muted);font-weight:500}
+.em-note{font-size:12px;line-height:1.5;color:var(--muted)}
+.em-note b{color:var(--ink);font-weight:600}
+.em-warn{font-size:11.5px;line-height:1.45;color:#FFB86B}
+.em-cost{font-size:12px;line-height:1.5;color:var(--muted);padding-top:8px;
+  border-top:1px dashed var(--rule)}
+.em-cost b{color:var(--ink);font-weight:600}
 .spin{font-size:12.5px;color:var(--muted)}
 
 .empty{text-align:center;color:var(--muted);font-size:14px;padding:34px 12px}
@@ -189,6 +202,7 @@ let LEVELS_LIVE = false; // did the live levels call succeed?
 let LAST_TICK = null;    // when the live prices last actually arrived
 let filter = 'all', query = '', expanded = null;
 const newsCache = new Map();
+const emCache = new Map();
 
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -325,8 +339,86 @@ function detailHtml(s) {
       ${cell('Day range', s.day_low == null ? '—' : `${num(s.day_low, 0)}–${num(s.day_high, 0)}`)}
       ${cell('Prev close', num(s.prev_close))}
     </div>
+    <div class="nh">Expected range</div>
+    <div id="em-${esc(s.symbol)}"><span class="spin">Reading the options market…</span></div>
     <div class="nh">Why it moved</div>
     <div class="news" id="n-${esc(s.symbol)}"><span class="spin">Looking for recent coverage…</span></div>`;
+}
+
+/* ---------------- cost of a round trip ----------------
+   Indian delivery equity, discount broker (₹0 brokerage). Rates are public
+   and statutory; the only broker-specific line is DP charges. Shown because
+   the breakeven is a fact almost no app puts on screen: below this move you
+   are behind before the market does anything. */
+const COSTS = {
+  sttPct: 0.10,        // 0.1% each side, delivery — much the largest component
+  stampPct: 0.015,     // buy side only
+  exchGstPct: 0.00375, // exchange txn + SEBI + GST on both, combined
+  dpFlat: 15.34,       // per sell scrip, depository — the one broker-dependent line
+  brokerage: 0,        // discount brokers charge nothing for delivery
+};
+
+/** Round-trip cost on a given notional, and the move needed to clear it. */
+function roundTrip(notional) {
+  const stt = notional * (COSTS.sttPct / 100) * 2;
+  const stamp = notional * (COSTS.stampPct / 100);
+  const exch = notional * (COSTS.exchGstPct / 100) * 2;
+  const total = stt + stamp + exch + COSTS.dpFlat + COSTS.brokerage * 2;
+  return {total, bps: (total / notional) * 10000, pct: (total / notional) * 100};
+}
+
+/* ---------------- expected move ----------------
+   What the options market prices this name moving by expiry. Fetched on
+   demand like news: two upstream calls per stock, and thirty of those on one
+   page load would exceed the proxy's subrequest ceiling.
+
+   It is symmetric around spot by construction. It says how far, never which
+   way — and the page must never imply otherwise. */
+async function loadExpectedMove(sym) {
+  const box = document.getElementById('em-' + sym);
+  if (!box) return;
+  if (emCache.has(sym)) { box.innerHTML = emCache.get(sym); return; }
+  try {
+    const r = await fetch(`${API}/api/expected-move?symbol=${encodeURIComponent(sym)}`);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    let html;
+    if (!d.available) {
+      html = `<div class="quiet">No option chain for this name — ${esc(d.reason || 'unavailable')}.</div>`;
+    } else {
+      const cost = roundTrip(100000);
+      // Coverage is the MEASURED figure, not the textbook 68%: over 2,471
+      // seven-day windows the 1σ band actually held 76.6% of the time,
+      // because implied vol runs above realised. Quoting 68% here would
+      // understate the band's own conservatism.
+      const cov = Math.round((d.measured_coverage_7d || 0.766) * 100);
+      html =
+        `<div class="em">
+           <div class="em-band">
+             <span class="em-lo">${num(d.low)}</span>
+             <span class="em-mid">± ${num(d.sigma)} <i>(${d.sigma_pct}%)</i></span>
+             <span class="em-hi">${num(d.high)}</span>
+           </div>
+           <div class="em-note">
+             Options price a move of about <b>${d.sigma_pct}%</b> either way by
+             ${esc(d.expiry)} (${d.days_to_expiry}d). Bands like this have held
+             about <b>${cov}%</b> of the time historically.
+             <b>This is a range, not a direction.</b>
+           </div>
+           ${d.method_disagreement
+             ? `<div class="em-warn">The two ways of deriving this disagree by
+                 ${Math.abs(Math.round((d.method_ratio - 1) * 100))}% — the ATM
+                 quote may be stale. Treat it as indicative.</div>` : ''}
+           <div class="em-cost">Round trip on ₹1L costs <b>₹${cost.total.toFixed(0)}</b>
+             (${cost.bps.toFixed(1)} bps) — it must move <b>${cost.pct.toFixed(2)}%</b>
+             before you are level.</div>
+         </div>`;
+    }
+    emCache.set(sym, html);
+    box.innerHTML = html;
+  } catch (e) {
+    box.innerHTML = `<div class="quiet">Couldn't read the options chain (${esc(e.message)}).</div>`;
+  }
 }
 
 /* ---------------- news ----------------
@@ -397,7 +489,7 @@ function render() {
   list.innerHTML = shown.length
     ? shown.map(rowHtml).join('')
     : `<div class="empty">Nothing matches.</div>`;
-  if (expanded && shown.some(s => s.symbol === expanded)) loadNews(expanded);
+  if (expanded && shown.some(s => s.symbol === expanded)) { loadExpectedMove(expanded); loadNews(expanded); }
 
   if (LIVE?.index) {
     // Name the index. The feed is NIFTY 500 now that the watchlist is not an

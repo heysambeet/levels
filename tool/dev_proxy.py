@@ -12,6 +12,7 @@ tool/test_proxy_parity.py fails if this file can no longer read the table.
 from __future__ import annotations
 
 import json
+import math
 import re
 import sys
 import threading
@@ -36,7 +37,7 @@ def load_routes() -> tuple[dict, str]:
     src = ROUTES_JS.read_text()
     ua = re.search(r"BROWSER_UA\s*=\s*\n?\s*'([^']+)'", src)
     routes = {}
-    for name in ("live", "indicators", "news"):
+    for name in ("live", "indicators", "expectedMove", "news"):
         block = re.search(rf"\b{name}:\s*\{{(.*?)\n  \}},", src, re.S)
         if not block:
             raise RuntimeError(f"could not parse route '{name}' from {ROUTES_JS}")
@@ -49,15 +50,42 @@ def load_routes() -> tuple[dict, str]:
             raise RuntimeError(f"route '{name}' is missing path/upstream/ttl")
         routes[name] = {"path": path.group(1), "upstream": upstream.group(1),
                         "ttl": int(ttl.group(1))}
-        extra = re.search(r"index_upstream:\s*\n?\s*'([^']+)'", b)
-        if extra:
-            routes[name]["index_upstream"] = extra.group(1)
+        # Secondary upstreams some routes need: the NIFTY 50 header call, and
+        # the expiry-list hop the option chain is useless without.
+        for key in ("index_upstream", "contracts", "candles"):
+            extra = re.search(rf"{key}:\s*\n?\s*'([^']+)'", b)
+            if extra:
+                routes[name][key] = extra.group(1)
     if not ua:
         raise RuntimeError("could not parse BROWSER_UA")
     return routes, ua.group(1)
 
 
 ROUTES, BROWSER_UA = load_routes()
+
+
+def load_expected_move_consts() -> tuple[float, float, float, float]:
+    """Read EXPECTED_MOVE from routes.js. The straddle multiplier especially
+    must not be restated: √(π/2)=1.2533 is the correct one and the widely
+    repeated 0.85 is not, so two copies is two chances to ship the wrong one."""
+    src = ROUTES_JS.read_text()
+    block = re.search(r"EXPECTED_MOVE\s*=\s*\{(.*?)\n\};", src, re.S)
+    if not block:
+        raise RuntimeError("could not parse EXPECTED_MOVE from routes.js")
+    b = block.group(1)
+    if "Math.SQRT2 * Math.sqrt(Math.PI) / 2" not in b:
+        raise RuntimeError("straddleToSigma is no longer √(π/2) — check routes.js")
+    def num(name: str) -> float:
+        m = re.search(rf"{name}:\s*([0-9.]+)", b)
+        if not m:
+            raise RuntimeError(f"EXPECTED_MOVE.{name} missing from routes.js")
+        return float(m.group(1))
+    return (math.sqrt(math.pi / 2), num("minDaysToExpiry"),
+            num("maxMethodDisagreement"), num("measuredCoverage7d"))
+
+
+(STRADDLE_TO_SIGMA, MIN_DAYS_TO_EXPIRY,
+ MAX_METHOD_DISAGREEMENT, MEASURED_COVERAGE_7D) = load_expected_move_consts()
 _cache: dict[str, tuple[float, bytes]] = {}
 _lock = threading.Lock()
 
@@ -188,6 +216,69 @@ def local_indicators() -> dict:
     return out
 
 
+def expected_move(symbol: str, kind: str = "Equity") -> dict:
+    """Mirror of handleExpectedMove in backend/worker.js.
+
+    Symmetric around spot by construction — it says how far, never which way.
+    """
+    r = ROUTES["expectedMove"]
+    ci = json.loads(cached_get(r["contracts"] + urllib.parse.quote(symbol), r["ttl"]))
+    expiries = ci.get("expiryDates") or []
+    if not expiries:
+        return {"symbol": symbol, "available": False, "reason": "no listed options"}
+
+    now = datetime.now(IST)
+    dated = []
+    for e in expiries:
+        try:
+            exp = datetime.strptime(e, "%d-%b-%Y").replace(hour=15, minute=30, tzinfo=IST)
+        except ValueError:
+            continue
+        days = (exp - now).total_seconds() / 86400
+        if days >= MIN_DAYS_TO_EXPIRY:
+            dated.append((days, e))
+    if not dated:
+        return {"symbol": symbol, "available": False,
+                "reason": "nearest expiry is inside 12 hours"}
+    T, expiry = min(dated)
+
+    url = (f"{r['upstream']}?type={kind}&symbol={urllib.parse.quote(symbol)}"
+           f"&expiry={urllib.parse.quote(expiry)}")
+    rec = (json.loads(cached_get(url, r["ttl"])) or {}).get("records") or {}
+    rows, spot = rec.get("data") or [], rec.get("underlyingValue")
+    # Every failure mode answers HTTP 200 with an empty array — the row count
+    # is the health check, never the status code.
+    if not rows or not spot:
+        return {"symbol": symbol, "available": False,
+                "reason": "no option chain for this name"}
+
+    atm = min(rows, key=lambda row: abs(row["strikePrice"] - spot))
+    ce, pe = atm.get("CE") or {}, atm.get("PE") or {}
+    straddle = (ce.get("lastPrice") or 0) + (pe.get("lastPrice") or 0)
+    iv_pct = ((ce.get("impliedVolatility") or 0) + (pe.get("impliedVolatility") or 0)) / 2
+    if straddle <= 0 or iv_pct <= 0:
+        return {"symbol": symbol, "available": False,
+                "reason": "ATM strike has no live quotes"}
+
+    sigma_straddle = straddle * STRADDLE_TO_SIGMA
+    sigma_iv = spot * (iv_pct / 100) * math.sqrt(T / 365)
+    ratio = sigma_straddle / sigma_iv if sigma_iv > 0 else 0
+    sigma = (sigma_straddle + sigma_iv) / 2
+    return {
+        "symbol": symbol, "available": True, "expiry": expiry,
+        "days_to_expiry": round(T, 2), "spot": spot,
+        "atm_strike": atm["strikePrice"], "straddle": round(straddle, 2),
+        "iv_pct": round(iv_pct, 2), "sigma": round(sigma, 2),
+        "sigma_pct": round(sigma / spot * 100, 2),
+        "low": round(spot - sigma, 2), "high": round(spot + sigma, 2),
+        "method_ratio": round(ratio, 3),
+        "method_disagreement": abs(ratio - 1) > MAX_METHOD_DISAGREEMENT,
+        "measured_coverage_7d": MEASURED_COVERAGE_7D,
+        "chain_timestamp": rec.get("timestamp"),
+        "directional": False,
+    }
+
+
 class Handler(SimpleHTTPRequestHandler):
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=str(WEB), **kw)
@@ -235,6 +326,13 @@ class Handler(SimpleHTTPRequestHandler):
                 # the two implementations is what test_worker_indicators.py
                 # exists to catch.
                 return self._send(local_indicators())
+            if url.path == ROUTES["expectedMove"]["path"]:
+                q = urllib.parse.parse_qs(url.query)
+                sym = (q.get("symbol", [""])[0] or "").strip().upper()
+                if not sym:
+                    return self._send({"error": "symbol required"}, 400)
+                kind = "Indices" if q.get("type", [""])[0] == "Indices" else "Equity"
+                return self._send(expected_move(sym, kind))
             if url.path == "/health":
                 return self._send({"ok": True, "routes": list(ROUTES)})
         except urllib.error.HTTPError as e:

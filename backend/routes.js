@@ -57,6 +57,26 @@ export const ROUTES = {
     ttl: 3600,
     type: 'application/json',
   },
+  // The option-implied expected move — how far the options market prices this
+  // name moving by expiry. Fetched per stock on demand, like news, because it
+  // costs two upstream calls each and thirty of those would blow the Worker's
+  // 50-subrequest ceiling on a single page load.
+  //
+  // It answers "how far", never "which way": the band is symmetric around
+  // spot by construction and carries no directional information at all.
+  expectedMove: {
+    path: '/api/expected-move',
+    // Two hops. The chain REQUIRES an explicit &expiry= — without it NSE
+    // returns HTTP 200 and a literal `{}`. A cookie warm-up changes nothing;
+    // a browser User-Agent is the only requirement.
+    upstream: 'https://www.nseindia.com/api/option-chain-v3',
+    contracts: 'https://www.nseindia.com/api/option-chain-contract-info?symbol=',
+    // NSE caches the chain 60–90s; polling faster returns an identical
+    // timestamp.
+    ttl: 90,
+    type: 'application/json',
+  },
+
   // Per-stock headlines. Fetched only for stocks that actually moved, so this
   // is a handful of requests a day, not fifty.
   news: {
@@ -77,6 +97,29 @@ export const INDICATORS = {
   historyDays: 500,   // ≈338 trading bars; a 200DMA needs 200, a 52w range ~250
   rsiPeriod: 14,
   minBars52w: 200,
+};
+
+export const EXPECTED_MOVE = {
+  // An ATM straddle prices E[|move|] = S·σ·√T·√(2/π), so one sigma is the
+  // straddle divided by 0.7979 — i.e. × √(π/2) = 1.2533.
+  //
+  // The widely repeated "straddle × 0.85 ≈ 1σ" rule is simply wrong: it
+  // yields 0.68σ, a ~50% band, and shipping it labelled 68% would understate
+  // the range by nearly half. Measured on eight live chains, × 1.2533 agrees
+  // with S·IV·√(T/365) at 0.993 ± 0.011.
+  straddleToSigma: Math.SQRT2 * Math.sqrt(Math.PI) / 2,   // √(π/2)
+  // Inside ~12h of expiry the ATM approximation degenerates — CE and PE IV
+  // diverge and the straddle-implied sigma blew out 2.3× in testing.
+  minDaysToExpiry: 0.5,
+  // If the two independent routes to sigma disagree by more than this, the
+  // chain is telling us something is off (stale print, illiquid strike) and
+  // the answer is flagged rather than shown as fact.
+  maxMethodDisagreement: 0.15,
+  // Measured, not assumed: over 2,471 overlapping 7-day windows on NIFTY the
+  // 1σ band contained the actual move 76.6% of the time against a theoretical
+  // 68.3%, because implied vol runs ~21% above subsequently realised vol.
+  // The band is therefore a conservative ceiling, not a forecast.
+  measuredCoverage7d: 0.766,
 };
 
 export const ALLOWED_HOSTS = [

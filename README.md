@@ -73,6 +73,7 @@ python3 tool/test_proxy_parity.py
 | `backend/worker.js` | Deployed Cloudflare Worker |
 | `tool/dev_proxy.py` | Local twin of the Worker, plus a static server |
 | `web/index.html` | The page |
+| `/api/expected-move` | Option-implied range per stock, fetched on demand |
 
 Two data paths, because they change at different rates — and **neither
 depends on someone remembering to rebuild anything**:
@@ -176,6 +177,40 @@ a wrong number, not an error.
   Saturn's moon; Shriram returns a film star's husband.
 
 ---
+
+## Expected range, and why there is no signal
+
+The app shows an **option-implied expected move** — how far the options market
+prices a name moving by expiry — and the **round-trip cost** needed to break
+even. Both are measurements. Neither is a signal, and that is a researched
+position, not caution.
+
+Direction is not forecastable at this sample size. Moving-average crossovers,
+RSI thresholds, MACD and chart patterns fail out-of-sample; the most-cited
+positive result in the literature reverses on the following decade, and the
+RSI rule on CNX Nifty failed to make money *before* costs. The binding limit
+is statistical power: a golden cross fires ~0.64×/year/stock, and detecting a
+real +2% edge at a credible threshold needs **~461 independent events**. One
+user cannot collect those in a lifetime. A mean-reversion rule tested here
+showed a +17pp edge on INFY, survived four robustness checks, then died on
+multiple-testing correction and the fact that 104% of its profit came from
+three days — while the same rule ran the opposite sign on RELIANCE.
+
+What *is* forecastable is volatility, which is why the band exists.
+
+**The two numbers that matter, both measured:**
+- The straddle-to-1σ multiplier is **√(π/2) = 1.2533**. The widely repeated
+  "straddle × 0.85" rule yields **0.68σ** — a ~50% band that would ship
+  labelled 68%. `test_expected_move.py` fails if anyone "corrects" it.
+- Coverage is quoted as the **measured 76.6%**, not the textbook 68.3%. Over
+  2,471 seven-day windows the 1σ band held more often than theory says,
+  because implied vol runs ~21% above realised. The band is a conservative
+  ceiling, not a forecast.
+
+The band is **symmetric by construction** and the response carries
+`directional: false`. Every failure mode of the option chain answers HTTP 200
+with an empty array, so availability is judged on row count and
+`underlyingValue`, never on the status code.
 
 ## Decisions
 
