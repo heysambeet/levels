@@ -16,6 +16,7 @@ python3 tool/build_aliases.py
 echo "==> tests"
 python3 tool/test_indicators.py
 python3 tool/test_proxy_parity.py
+python3 tool/test_page_loads.py
 
 echo "==> commit web/ (if changed)"
 # Stage all of web/, not just web/data. Staging only the data directory once

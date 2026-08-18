@@ -413,10 +413,10 @@ function render() {
   // the clock is news, and printing both wrapped this line onto two ragged
   // rows on a phone — which is when the line is actually being read.
   const stamp = (LIVE?.as_of || '').trim();
-  const shown = open ? (stamp.split(' ')[1] || stamp) : stamp;
+  const clock = open ? (stamp.split(' ')[1] || stamp) : stamp;
   $('#status').innerHTML =
     `<span class="dot ${open ? 'open' : ''}"></span>
-     <span class="mk">${open ? 'Open' : 'Closed'}${shown ? ' · ' + esc(shown) : ''}</span>
+     <span class="mk">${open ? 'Open' : 'Closed'}${clock ? ' · ' + esc(clock) : ''}</span>
      <span class="sp">${b ? `${b.advances}↑ ${b.declines}↓ · ` : ''}<span id="age"></span></span>`;
   paintAge();
 
