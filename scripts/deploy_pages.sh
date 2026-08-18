@@ -17,9 +17,20 @@ echo "==> tests"
 python3 tool/test_indicators.py
 python3 tool/test_proxy_parity.py
 
-echo "==> commit data (if changed)"
-git add web/data
-git diff --cached --quiet || git commit -m "data: refresh to the latest close"
+echo "==> commit web/ (if changed)"
+# Stage all of web/, not just web/data. Staging only the data directory once
+# deployed a "successful" build that silently omitted an index.html change —
+# the script reported done, the edge served the old page, and the only clue
+# was the change simply not being there.
+git add web
+git diff --cached --quiet || git commit -m "web: refresh data and page for deploy"
+
+# Anything else still uncommitted is not going out, so say so rather than
+# letting the next deploy look like it shipped work it never saw.
+if ! git diff --quiet -- . ':!web'; then
+  echo "    note: uncommitted changes outside web/ are NOT deployed:"
+  git diff --name-only -- . ':!web' | sed 's/^/      /'
+fi
 
 echo "==> push main + gh-pages"
 git push origin main
