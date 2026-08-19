@@ -142,6 +142,41 @@ input[type=search]::placeholder{color:var(--faint)}
 .em-cost b{color:var(--ink);font-weight:600}
 .spin{font-size:12.5px;color:var(--muted)}
 
+/* ---------------- market panel ----------------
+   One card above the list answering "is today about my companies, or about the
+   market?" — the question that decides whether reading any news below is worth
+   the time. Deliberately monochrome: the up/down colours are the data layer for
+   individual stocks, and tinting this would make a market-wide dip read as
+   thirty separate verdicts. */
+.mkt{background:var(--card);border:1px solid var(--rule);border-radius:12px;margin-bottom:9px;overflow:hidden}
+.mktbtn{display:block;width:100%;text-align:left;padding:11px 13px}
+.mkt-h{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.mkt-t{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600}
+.mkt-c{font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.mkt-l{font-size:13.5px;line-height:1.5;margin-top:6px;color:var(--muted)}
+.mkt-l b{color:var(--ink);font-weight:600}
+/* Two stacked bars: raw count, then the count that survives adjusting for how
+   each name normally moves with the index. Seeing them differ is the point. */
+.mkt-bars{display:flex;flex-direction:column;gap:5px;margin-top:9px}
+.mkt-bar{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--faint);font-variant-numeric:tabular-nums}
+.mkt-bar .lab{width:82px;flex:0 0 auto}
+.mkt-bar .tr{flex:1;height:5px;border-radius:3px;background:var(--raised);overflow:hidden;min-width:0}
+.mkt-bar .tr i{display:block;height:100%;border-radius:3px;background:var(--faint)}
+.mkt-bar.own .tr i{background:var(--ink)}
+.mkt-bar .ct{width:44px;flex:0 0 auto;text-align:right;color:var(--muted)}
+.mkt-d{border-top:1px solid var(--rule);padding:11px 13px 13px;background:var(--raised);font-size:12.5px;line-height:1.55;color:var(--muted)}
+.mkt-d b{color:var(--ink);font-weight:600}
+.mkt-d p{margin-bottom:9px}
+.mkt-d p:last-child{margin-bottom:0}
+.mkt-scale{display:flex;height:4px;border-radius:2px;overflow:hidden;margin:7px 0 4px;background:var(--card)}
+.mkt-scale i{flex:1;background:var(--rule)}
+.mkt-scale i.on{background:var(--ink)}
+.mkt-ends{display:flex;justify-content:space-between;font-size:10px;color:var(--faint);font-variant-numeric:tabular-nums}
+
+/* "vs market" on a row — shown only when it says something the headline % does
+   not, i.e. when the market moved enough for the distinction to exist. */
+.rel{font-size:11px;font-weight:600;margin-top:2px;color:var(--faint);font-variant-numeric:tabular-nums}
+
 .empty{text-align:center;color:var(--muted);font-size:14px;padding:34px 12px}
 .err{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:18px;text-align:center;color:var(--muted);font-size:14px;margin-top:12px}
 .err button{color:var(--lime);font-weight:600;margin-top:9px;padding:8px 16px;border:1px solid color-mix(in srgb,var(--lime) 42%,transparent);border-radius:9px}
@@ -169,6 +204,7 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 </header>
 
 <main class="wrap">
+  <div id="mkt"></div>
   <div class="list" id="list">
     <div class="skel"></div><div class="skel"></div><div class="skel"></div>
   </div>
@@ -187,8 +223,11 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 const API = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   ? location.origin
   : 'https://levels-proxy.marketnudge.workers.dev';
-/* NSE republishes roughly every 5s and the proxy caches for 5s, so 10s is
-   about as live as this data gets — faster only re-fetches the same number. */
+/* Measured on a live trading day: NSE stamps a new timestamp about every 55s,
+   so a 10s poll mostly returns the number it already had. That is deliberate —
+   it costs nothing here and keeps the lag to a new print under a poll's width,
+   rather than under a minute's. The row beside the clock shows NSE's own stamp,
+   so the reader is never told the exchange is fresher than it is. */
 const REFRESH_OPEN_MS = 10_000;      // while the market is open
 const REFRESH_SHUT_MS = 5 * 60_000;  // when it is not — the number cannot move
 /* The daily layer only changes when a new bar prints, but the page may sit
@@ -200,7 +239,8 @@ let LIVE = null;         // live prices (via proxy)
 let ALIASES = {};        // symbol -> {press_name, aliases, block}
 let LEVELS_LIVE = false; // did the live levels call succeed?
 let LAST_TICK = null;    // when the live prices last actually arrived
-let filter = 'all', query = '', expanded = null;
+let VRP = null;          // volatility premium — daily file, index level only
+let filter = 'all', query = '', expanded = null, mktOpen = false;
 const newsCache = new Map();
 const emCache = new Map();
 
@@ -210,6 +250,12 @@ const num = (n, dp = 2) => n == null || !isFinite(n) ? '—'
   : n.toLocaleString('en-IN', {minimumFractionDigits: dp, maximumFractionDigits: dp});
 const pct = n => n == null || !isFinite(n) ? '—' : (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n).toFixed(2) + '%';
 const dir = n => n > 0 ? 'u' : n < 0 ? 'd' : 'flat';
+/* 1st/2nd/3rd/4th — with the teens exception, which is the half everyone
+   forgets: 11, 12 and 13 take "th" despite ending in 1, 2 and 3. */
+const ordinal = n => {
+  const v = Math.abs(Math.round(n)), t = v % 100, u = v % 10;
+  return n + (t >= 11 && t <= 13 ? 'th' : u === 1 ? 'st' : u === 2 ? 'nd' : u === 3 ? 'rd' : 'th');
+};
 
 /* ---------------- filters ----------------
    Each one answers a question worth asking, and each is a plain measurement.
@@ -229,10 +275,24 @@ const FILTERS = [
 function merge() {
   if (!IND) return [];
   const live = new Map((LIVE?.stocks ?? []).map(s => [s.symbol, s]));
+  const mkt = LIVE?.index?.pct;
   return IND.stocks.map(d => {
     const l = live.get(d.symbol) || {};
     const last = l.last ?? d.close;
+    /* The move split into the part the index explains and the part it does not.
+       A stock with beta 1.4 on a day the index falls 1% is "expected" to fall
+       1.4%; falling 1.0% means it actually outperformed. Without this the page
+       cannot distinguish a company-specific move from the tide, and every
+       market-wide dip reads as thirty separate problems.
+
+       Null unless every input is real — a beta of 0 assumed for a name whose
+       history was too short would silently relabel the market's move as its
+       own, which is precisely the error this exists to prevent. */
+    const beta = d.beta ?? null;
+    const own = (beta != null && l.pct != null && mkt != null)
+      ? l.pct - beta * mkt : null;
     return {
+      beta, own, market_pct: mkt ?? null,
       // NSE's live feed shouts ("BAJAJ FINANCE LIMITED"); the published
       // constituent list is properly cased. Prefer the readable one.
       symbol: d.symbol, name: d.name || l.name, industry: d.industry,
@@ -309,6 +369,24 @@ function tags(s) {
   return t.join('');
 }
 
+/* The move that is the company's own.
+   Gated on whether the INDEX moved, not on how much of this particular stock
+   the index explains. Gating on the latter was the first attempt and it was
+   backwards: a low-beta name has almost none of its move explained by the
+   market, so the line vanished from exactly the rows where the answer is "this
+   one really is about the company — go read the news." The near-identity of
+   the two numbers on such a row is the signal, not a redundancy.
+
+   On a genuinely flat index the line is suppressed for everyone, because then
+   beta x index is a rounding error and this would merely restate the headline
+   percentage in fainter type. */
+function relHtml(s) {
+  if (s.own == null || s.beta == null || s.market_pct == null) return '';
+  if (Math.abs(s.market_pct) < MKT_FLAT_PP) return '';
+  return `<div class="rel" title="Its own move: ${pct(s.pct)} less beta ${s.beta.toFixed(2)} × ${esc(LIVE?.index?.symbol || 'index')} ${pct(s.market_pct)}">
+    ${pct(s.own)} vs mkt</div>`;
+}
+
 function rowHtml(s) {
   const open = expanded === s.symbol;
   return `<div class="row" data-sym="${esc(s.symbol)}">
@@ -321,6 +399,7 @@ function rowHtml(s) {
         <div class="px">
           <div class="v">${num(s.last)}</div>
           <div class="c ${dir(s.pct)}">${pct(s.pct)}</div>
+          ${relHtml(s)}
         </div>
       </div>
       ${bar(s)}
@@ -343,6 +422,117 @@ function detailHtml(s) {
     <div id="em-${esc(s.symbol)}"><span class="spin">Reading the options market…</span></div>
     <div class="nh">Why it moved</div>
     <div class="news" id="n-${esc(s.symbol)}"><span class="spin">Looking for recent coverage…</span></div>`;
+}
+
+/* ---------------- the market panel ----------------
+   Answers the question that comes before any of the rows: is today about these
+   companies, or about the market? Thirty names down 1% on a day the index is
+   down 1.2% is not thirty stories — it is one, and the news below will not
+   explain it because there is nothing company-specific to explain.
+
+   Raw breadth alone cannot say that. Breadth net of each name's usual
+   sensitivity to the index can. Measured on this watchlist the two genuinely
+   diverge: on 2026-08-18 the index fell 0.55%, 8 of 30 names were up, but 14
+   were up once their beta was accounted for.
+
+   The decomposition is sound rather than merely plausible: average pairwise
+   correlation across the watchlist is 0.27, and subtracting beta x index drops
+   it to -0.01. One common factor is doing the work. */
+const MKT_FLAT_PP = 0.15;   // below this the index has not really moved
+
+function marketPanel(rows) {
+  const el = $('#mkt');
+  if (!el) return;
+  const idx = LIVE?.index;
+  const withBeta = rows.filter(s => s.own != null);
+  // Before the first live tick, or on a watchlist whose history is too short
+  // for betas, there is nothing to say. Say nothing rather than a hedged
+  // sentence about an empty measurement.
+  if (!idx || idx.pct == null || withBeta.length < 3) { el.innerHTML = ''; return; }
+
+  const priced = rows.filter(s => s.pct != null);
+  const rawUp = priced.filter(s => s.pct > 0).length;
+  const ownUp = withBeta.filter(s => s.own > 0).length;
+  const flat = Math.abs(idx.pct) < MKT_FLAT_PP;
+  const gap = ownUp - rawUp;
+
+  // The sentence adapts to what was actually measured. On a flat day the two
+  // counts agree by construction and claiming otherwise would be theatre.
+  let line;
+  if (flat) {
+    line = `The index has barely moved, so today's moves are the companies' own.`;
+  } else if (Math.abs(gap) >= 3) {
+    line = idx.pct < 0
+      ? `<b>${ownUp} of ${withBeta.length}</b> are holding up better than their
+         usual sensitivity to the index would predict — much of this fall is the
+         market, not the companies.`
+      : `Only <b>${ownUp} of ${withBeta.length}</b> are ahead of what the index
+         alone would have carried them — much of this rise is the market.`;
+  } else {
+    line = `Adjusting for the index barely changes the picture — today is mostly
+            about the companies themselves.`;
+  }
+
+  const bar = (cls, lab, n, of) => `<div class="mkt-bar ${cls}">
+      <span class="lab">${lab}</span>
+      <span class="tr"><i style="width:${of ? (n / of * 100).toFixed(1) : 0}%"></i></span>
+      <span class="ct">${n}/${of}</span>
+    </div>`;
+
+  el.innerHTML = `<div class="mkt">
+    <button class="mktbtn" aria-expanded="${mktOpen}" aria-controls="mkt-detail"
+            aria-label="Today across your list: ${rawUp} of ${priced.length} up, ${ownUp} of ${withBeta.length} up against the market. Show how this is measured.">
+      <div class="mkt-h">
+        <span class="mkt-t">Today across your list</span>
+        <span class="mkt-c">${esc(idx.symbol || 'Index')} ${pct(idx.pct)}</span>
+      </div>
+      <div class="mkt-bars">
+        ${bar('', 'Up', rawUp, priced.length)}
+        ${bar('own', 'Up vs market', ownUp, withBeta.length)}
+      </div>
+      <div class="mkt-l">${line}</div>
+    </button>
+    ${mktOpen ? `<div class="mkt-d" id="mkt-detail">${marketDetail(rows, withBeta)}</div>` : ''}
+  </div>`;
+}
+
+function marketDetail(rows, withBeta) {
+  const ms = IND?.market_structure;
+  const bm = IND?.benchmark?.symbol || 'NIFTY 50';
+  let html = `<p><b>Up vs market</b> counts a name as up only if it beat what its
+    own history says the index alone would have done to it. A name with a beta of
+    1.4 on a day ${esc(bm)} falls 1% is expected to fall 1.4%; falling less than
+    that is its own strength, not the market's.</p>`;
+
+  if (ms && ms.effective_breadth != null) {
+    html += `<p>Across ${ms.n} names the average pair of stocks moves together
+      with a correlation of <b>${ms.avg_pair_corr.toFixed(2)}</b>. That makes this
+      list behave like about <b>${ms.effective_breadth} independent bets</b>, not
+      ${ms.n} — which is why so many rows tend to go the same way at once.</p>`;
+  }
+
+  if (VRP) {
+    const a = VRP.anchor;
+    const overUnder = VRP.ratio >= 1 ? 'above' : 'below';
+    // Ten decile cuts as a scale, with today's ratio lit. A bare percentile is
+    // a number; seeing where it falls in the distribution is a reading.
+    const cells = Array.from({length: 10}, (_, i) =>
+      `<i class="${Math.floor(VRP.percentile / 10) === i ? 'on' : ''}"></i>`).join('');
+    html += `<p style="margin-top:11px"><b>What options are charging.</b>
+      ${esc(VRP.implied.symbol)} is <b>${VRP.implied.value}</b>, while ${esc(VRP.benchmark)}
+      has actually delivered <b>${VRP.realised}</b> over the last
+      ${VRP.horizon_sessions} sessions — options priced
+      <b>${VRP.ratio.toFixed(2)}×</b> ${overUnder} recent delivery.</p>
+      <div class="mkt-scale">${cells}</div>
+      <div class="mkt-ends"><span>calm pricing</span><span>${ordinal(VRP.percentile)} percentile of
+        ${VRP.history.years} years</span><span>fearful</span></div>
+      <p style="margin-top:9px">Over those ${VRP.history.years} years implied ran
+      <b>${Math.round((a.mean_ratio - 1) * 100)}% above</b> what the index went on to
+      deliver, and was above it in <b>${a.above_pct}%</b> of windows. That is why the
+      expected-range band on each stock tends to be wider than the move that follows.
+      It is a width, not a direction.</p>`;
+  }
+  return html;
 }
 
 /* ---------------- cost of a round trip ----------------
@@ -485,6 +675,8 @@ function render() {
     return `<button class="chip" data-f="${f.id}" aria-pressed="${filter === f.id}">${f.label}<span class="n">${n}</span></button>`;
   }).join('');
 
+  marketPanel(rows);
+
   const list = $('#list');
   list.innerHTML = shown.length
     ? shown.map(rowHtml).join('')
@@ -523,12 +715,17 @@ function render() {
 
 /* ---------------- data ---------------- */
 async function loadStatic() {
-  const [ind, ali] = await Promise.all([
+  // The volatility premium is a daily file and never blocks the page: it is
+  // context for the bands, not the bands themselves, and a missing file should
+  // cost the reader one paragraph rather than the whole screen.
+  const [ind, ali, vrp] = await Promise.all([
     fetch('data/indicators.json', {cache: 'no-cache'}).then(r => r.json()),
     fetch('data/news_aliases.json', {cache: 'no-cache'}).then(r => r.json()).catch(() => ({stocks: []})),
+    fetch('data/vrp.json', {cache: 'no-cache'}).then(r => r.json()).catch(() => null),
   ]);
   IND = ind;
   ALIASES = Object.fromEntries((ali.stocks || []).map(s => [s.symbol, s]));
+  VRP = vrp;
 }
 
 /* Levels computed live from the latest close.
@@ -610,6 +807,11 @@ $('#list').addEventListener('click', e => {
     const el = document.querySelector(`.row[data-sym="${CSS.escape(sym)}"]`);
     if (el && el.getBoundingClientRect().top < 90) el.scrollIntoView({block: 'center', behavior: 'smooth'});
   }
+});
+$('#mkt').addEventListener('click', e => {
+  if (!e.target.closest('.mktbtn')) return;
+  mktOpen = !mktOpen;
+  render();
 });
 $('#chips').addEventListener('click', e => {
   const b = e.target.closest('.chip');
