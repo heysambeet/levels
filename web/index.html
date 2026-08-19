@@ -177,6 +177,37 @@ input[type=search]::placeholder{color:var(--faint)}
    not, i.e. when the market moved enough for the distinction to exist. */
 .rel{font-size:11px;font-weight:600;margin-top:2px;color:var(--faint);font-variant-numeric:tabular-nums}
 
+/* ---------------- alerts ----------------
+   The bar appears only when it has something to say: a level was crossed on a
+   name being watched, or notifications are off and could be on. A permanently
+   present "enable notifications" nag is how a page teaches its reader to skip
+   the top of the screen. */
+.alerts{background:var(--card);border:1px solid var(--rule);border-radius:12px;
+  padding:11px 13px;margin-bottom:9px}
+.alerts.live{border-color:color-mix(in srgb,var(--lime) 34%,transparent)}
+.alerts h4{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:6px}
+.alerts p{font-size:12.5px;line-height:1.5;color:var(--muted)}
+.alerts p b{color:var(--ink);font-weight:600}
+.alerts .x{display:flex;flex-direction:column;gap:5px;margin-top:2px}
+.alerts .x div{font-size:13px;line-height:1.45;color:var(--ink)}
+.alerts .x span{color:var(--muted)}
+.alerts .cta{margin-top:9px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.alerts button.on{color:var(--lime);font-weight:600;font-size:12.5px;padding:6px 13px;
+  border:1px solid color-mix(in srgb,var(--lime) 42%,transparent);border-radius:8px}
+.alerts button.off{color:var(--muted);font-size:12px;padding:6px 10px;border:1px solid var(--rule);border-radius:8px}
+.alerts .hint{font-size:11.5px;line-height:1.5;color:#FFB86B;margin-top:7px}
+
+/* A crossing is a fact about the stock's own history, so it is typed like the
+   other measurements rather than given an alarm colour. */
+.tag.cross{border-color:color-mix(in srgb,var(--ink) 30%,transparent);color:var(--ink)}
+.sym .bell{font-size:10px;color:var(--faint);font-weight:600;letter-spacing:.02em}
+.watch{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  margin-top:12px;padding-top:11px;border-top:1px dashed var(--rule)}
+.watch span{font-size:12px;color:var(--muted);line-height:1.45}
+.watch button{font-size:12px;font-weight:600;padding:6px 12px;border-radius:8px;
+  border:1px solid var(--rule);color:var(--muted);flex:0 0 auto}
+.watch button[aria-pressed=true]{border-color:color-mix(in srgb,var(--lime) 42%,transparent);color:var(--lime)}
+
 .empty{text-align:center;color:var(--muted);font-size:14px;padding:34px 12px}
 .err{background:var(--card);border:1px solid var(--rule);border-radius:12px;padding:18px;text-align:center;color:var(--muted);font-size:14px;margin-top:12px}
 .err button{color:var(--lime);font-weight:600;margin-top:9px;padding:8px 16px;border:1px solid color-mix(in srgb,var(--lime) 42%,transparent);border-radius:9px}
@@ -204,6 +235,7 @@ footer{margin-top:22px;padding-top:14px;border-top:1px solid var(--rule);font-si
 </header>
 
 <main class="wrap">
+  <div id="alerts"></div>
   <div id="mkt"></div>
   <div class="list" id="list">
     <div class="skel"></div><div class="skel"></div><div class="skel"></div>
@@ -238,6 +270,10 @@ let IND = null;          // daily levels — committed file, then live-computed
 let LIVE = null;         // live prices (via proxy)
 let ALIASES = {};        // symbol -> {press_name, aliases, block}
 let LEVELS_LIVE = false; // did the live levels call succeed?
+/* Has the daily layer stopped changing for this load? Until it has, IND is the
+   committed file, which is only as fresh as the last deploy — and notifying
+   from it can push a crossing belonging to an older session. */
+let LEVELS_SETTLED = false;
 let LAST_TICK = null;    // when the live prices last actually arrived
 let VRP = null;          // volatility premium — daily file, index level only
 let filter = 'all', query = '', expanded = null, mktOpen = false;
@@ -262,6 +298,8 @@ const ordinal = n => {
    Nothing here ranks, scores, or suggests. */
 const FILTERS = [
   {id:'all',    label:'All'},
+  {id:'watch',  label:'Watching',    fn:s => WATCHING.has(s.symbol)},
+  {id:'crossed',label:'Crossed',     fn:s => (s.crossings || []).length > 0},
   {id:'movers', label:'Moved >1%',   fn:s => Math.abs(s.pct ?? 0) >= 1},
   {id:'nearhi', label:'Near 52w high', fn:s => s.near_year_high != null && s.near_year_high <= 3},
   {id:'nearlo', label:'Near 52w low',  fn:s => s.near_year_low != null && Math.abs(s.near_year_low) <= 3},
@@ -291,6 +329,9 @@ function merge() {
     const beta = d.beta ?? null;
     const own = (beta != null && l.pct != null && mkt != null)
       ? l.pct - beta * mkt : null;
+    // A company whose history restarted at a corporate action, and which does
+    // not yet hold a year of it on the new basis.
+    const restated = d.structural_break != null && d.week52 == null;
     return {
       beta, own, market_pct: mkt ?? null,
       // NSE's live feed shouts ("BAJAJ FINANCE LIMITED"); the published
@@ -301,12 +342,24 @@ function merge() {
       // Prefer NSE's own 52-week figures when live; fall back to ours, which
       // were computed from a different provider and agree with NSE on every
       // symbol checked.
-      year_high: l.year_high ?? d.week52?.high ?? null,
-      year_low:  l.year_low  ?? d.week52?.low  ?? null,
-      near_year_high: l.near_year_high ?? null,
-      near_year_low:  l.near_year_low ?? null,
+      //
+      // Except after a restatement. NSE quotes the 52-week high of the TICKER,
+      // and a ticker that demerged genuinely printed that price — TMPV shows
+      // 739.70 against a 322.80 close — but it printed it as a larger company,
+      // so it is not a level this stock is measured against. Suppressing only
+      // our own computation would have left NSE's in its place and put the dot
+      // at the bottom of a range that no longer exists.
+      year_high: restated ? null : (l.year_high ?? d.week52?.high ?? null),
+      year_low:  restated ? null : (l.year_low  ?? d.week52?.low  ?? null),
+      near_year_high: restated ? null : (l.near_year_high ?? null),
+      near_year_low:  restated ? null : (l.near_year_low ?? null),
       day_high: l.day_high ?? null, day_low: l.day_low ?? null,
       prev_close: l.prev_close ?? null, volume: l.volume ?? null,
+      // null when the source carried no crossings field at all, [] when it
+      // carried one and nothing crossed. Collapsing the two would make a feed
+      // that stopped sending them indistinguishable from a quiet session.
+      crossings: Array.isArray(d.crossings) ? d.crossings : null,
+      structural_break: d.structural_break ?? null,
       as_of: d.as_of, stale: !live.has(d.symbol),
     };
   });
@@ -352,6 +405,12 @@ function bar(s) {
 
 function tags(s) {
   const t = [];
+  // Crossings lead, because they are the one thing on the row that is news
+  // rather than a standing measurement. Worded as an event, never as a verdict.
+  for (const c of s.crossings || []) {
+    t.push(`<span class="tag cross" title="Closed ${esc(c.direction)} ${esc(c.level)} at ${num(c.value)} on ${esc(s.as_of)}">
+      ${c.direction === 'above' ? '▲' : '▼'} crossed ${esc(c.level.replace('-day average', 'D').replace('52-week closing ', '52w '))}</span>`);
+  }
   for (const [k, lab] of [['dma50','50D'],['dma100','100D'],['dma200','200D']]) {
     if (s[k] == null) { t.push(`<span class="tag na">${lab} n/a</span>`); continue; }
     const above = s.last >= s[k];
@@ -393,7 +452,8 @@ function rowHtml(s) {
     <button class="rowbtn" aria-expanded="${open}">
       <div class="rh">
         <div style="min-width:0">
-          <div class="sym">${esc(s.symbol)}</div>
+          <div class="sym">${esc(s.symbol)}${WATCHING.has(s.symbol)
+            ? '<span class="bell" title="Alerting on level crossings">◔ watching</span>' : ''}</div>
           <div class="co">${esc(s.name || s.industry || '')}</div>
         </div>
         <div class="px">
@@ -421,7 +481,205 @@ function detailHtml(s) {
     <div class="nh">Expected range</div>
     <div id="em-${esc(s.symbol)}"><span class="spin">Reading the options market…</span></div>
     <div class="nh">Why it moved</div>
-    <div class="news" id="n-${esc(s.symbol)}"><span class="spin">Looking for recent coverage…</span></div>`;
+    <div class="news" id="n-${esc(s.symbol)}"><span class="spin">Looking for recent coverage…</span></div>
+    <div class="watch">
+      <span>Tell me when this closes the other side of a level. Checked against the
+        latest close while Levels is open, so a crossing is reported once — not
+        held for a day the page is never opened.</span>
+      <button data-watch="${esc(s.symbol)}" aria-pressed="${WATCHING.has(s.symbol)}">
+        ${WATCHING.has(s.symbol) ? 'Watching' : 'Watch'}</button>
+    </div>`;
+}
+
+/* ---------------- alerts ----------------
+   Shape locked by the owner: notifications, on CONFIRMED crossings only (the
+   close finished the other side), at most once per stock per level per day, on
+   a chosen shortlist rather than the whole watchlist.
+
+   Honesty constraints this code exists to keep:
+   - A crossing is reported as a thing that happened. Moving-average crossings
+     have no established predictive value — see README — so no wording here may
+     suggest an action, and none of it is phrased as urgent.
+   - On iOS, Web Push works ONLY for a page added to the Home Screen. In a
+     Safari tab the whole API is absent and permission requests fail silently,
+     which would leave a reader believing alerts are armed when nothing can ever
+     arrive. That case is detected and stated plainly instead.
+   - Delivery today is while the page is open: on load it reports what crossed
+     since it was last looked at. Background delivery needs a push subscription
+     store and a scheduled sender, which do not exist yet — so the panel says
+     when alerts can actually reach you rather than implying they always can. */
+const LS_WATCH = 'levels.watching';
+/* Two different facts, deliberately stored apart. "Notified" stops the same
+   crossing being pushed twice; "acknowledged" stops the on-page list vanishing
+   before it has been read. Collapsing them into one flag makes the banner
+   disappear ten seconds after the notification fires, on the next refresh. */
+const LS_NOTIFIED = 'levels.notified';
+const LS_ACKED = 'levels.acked';
+/* Answering the permission offer with "Not now" is a third, separate fact. */
+const LS_NONAG = 'levels.nonag';
+
+function lsGet(k, fallback) {
+  try { return JSON.parse(localStorage.getItem(k)) ?? fallback; }
+  catch { return fallback; }        // private mode, or a value from an older shape
+}
+function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+
+let WATCHING = new Set(lsGet(LS_WATCH, []));
+let NOTIFIED = lsGet(LS_NOTIFIED, {});   // "SYMBOL|level" -> session already pushed
+let ACKED = lsGet(LS_ACKED, {});         // "SYMBOL|level" -> session dismissed here
+let undelivered = 0;                     // events the OS refused on this pass
+
+/* iOS gates Web Push behind Home-Screen installation. `navigator.standalone`
+   is the iOS-specific signal; the display-mode query covers installed PWAs
+   elsewhere. Both are checked because neither alone is right on every device. */
+const IS_IOS = /iP(hone|ad|od)/.test(navigator.userAgent) ||
+  (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const STANDALONE = window.matchMedia?.('(display-mode: standalone)').matches ||
+  navigator.standalone === true;
+const CAN_NOTIFY = typeof Notification !== 'undefined';
+
+function notifyState() {
+  if (IS_IOS && !STANDALONE) return 'ios-tab';       // API absent or inert
+  if (!CAN_NOTIFY) return 'unsupported';
+  return Notification.permission;                     // granted | denied | default
+}
+
+/** Every crossing on a watched name for the session in hand. Keyed by stock +
+    level + session, which is exactly what "once per stock per level per day"
+    means once the underlying data is daily. */
+function watchedCrossings(rows) {
+  const out = [];
+  for (const s of rows) {
+    if (!WATCHING.has(s.symbol)) continue;
+    for (const c of s.crossings || []) {
+      out.push({...c, symbol: s.symbol, name: s.name, as_of: s.as_of,
+                key: `${s.symbol}|${c.level}`});
+    }
+  }
+  return out;
+}
+
+const unacked = list => list.filter(c => ACKED[c.key] !== c.as_of);
+const unnotified = list => list.filter(c => NOTIFIED[c.key] !== c.as_of);
+
+function mark(store, lsKey, list) {
+  for (const c of list) store[c.key] = c.as_of;
+  lsSet(lsKey, store);
+}
+
+/** Plain statement of what happened. No verb suggesting what to do about it. */
+const crossingLine = c =>
+  `${c.symbol} closed ${c.direction} its ${c.level} (${num(c.value)})`;
+
+/** Returns the events actually delivered — NOT the ones attempted.
+ *
+ *  Chrome on Android throws on the bare `new Notification()` constructor and
+ *  requires a service worker registration instead. Marking an event delivered
+ *  because we tried would silence it forever on that platform while the page
+ *  claimed alerts were on: the reader would be told nothing, and shown nothing,
+ *  which is the precise failure this product treats as unacceptable. So only
+ *  what genuinely reached the OS is recorded, and the caller reports the rest. */
+function fireNotifications(list) {
+  const delivered = [];
+  if (notifyState() !== 'granted' || !list.length) return delivered;
+  // One notification per event rather than a digest: each names a different
+  // stock, and a merged "3 crossings" would need the page open to be read
+  // anyway, which defeats the point of sending it.
+  for (const c of list) {
+    try {
+      new Notification(`${c.symbol} · ${c.level}`, {
+        body: `${crossingLine(c)} on ${c.as_of}. A measurement, not a recommendation.`,
+        tag: `${c.symbol}|${c.level}|${c.as_of}`,   // dedupes if two tabs are open
+        icon: 'data:image/svg+xml,' + encodeURIComponent(
+          "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230A0A0B'/><g stroke='%23CCFF00' stroke-width='2.4' stroke-linecap='round'><path d='M7 10h18'/><path d='M7 22h18'/></g></svg>"),
+      });
+      delivered.push(c);
+    } catch (e) {
+      // Left undelivered on purpose, so the panel can say so.
+      console.warn('notification failed', e);
+    }
+  }
+  return delivered;
+}
+
+function alertsPanel(rows) {
+  const el = $('#alerts');
+  if (!el) return;
+  const state = notifyState();
+  const all = watchedCrossings(rows);
+  const pending = unacked(all);
+  const watched = rows.filter(s => WATCHING.has(s.symbol));
+
+  // Push first, and record it immediately — independent of whether the banner
+  // is still on screen, so a notification is never sent twice and the list
+  // never disappears early.
+  //
+  // Not until the daily layer has settled, though. On load IND is still the
+  // committed file, which is only as fresh as the last deploy; notifying from
+  // it can push a crossing from an older session, and then push again when the
+  // live levels arrive with a different as_of. Waiting costs one render.
+  if (state === 'granted' && LEVELS_SETTLED) {
+    const fresh = unnotified(all);
+    if (fresh.length) {
+      const delivered = fireNotifications(fresh);
+      mark(NOTIFIED, LS_NOTIFIED, delivered);
+      // Anything the OS refused stays unnotified and is reported below rather
+      // than being quietly dropped.
+      undelivered = fresh.length - delivered.length;
+    }
+  }
+
+  // Silent unless there is either news or something the reader can act on. A
+  // standing "notifications are blocked" notice on every load is a nag about a
+  // setting this page cannot change, and it teaches the reader to skip the top
+  // of the screen — so that explanation appears beside a crossing, at the
+  // moment it explains something, and not before.
+  const offering = WATCHING.size && state === 'default' && !lsGet(LS_NONAG, false);
+  if (!pending.length && !offering) {
+    el.innerHTML = '';
+    return;
+  }
+
+  let html = '';
+  if (pending.length) {
+    html += `<h4>Levels crossed</h4><div class="x">${pending.map(c =>
+      `<div>${esc(crossingLine(c))} <span>on ${esc(c.as_of)}</span></div>`).join('')}</div>`;
+  } else {
+    html += `<h4>Alerts</h4><p>Watching <b>${watched.length}</b>
+      ${watched.length === 1 ? 'name' : 'names'} for confirmed level crossings.</p>`;
+  }
+
+  if (undelivered) {
+    html += `<div class="hint">${undelivered} of these could not be delivered as a
+      notification by this browser, so they are only shown here.</div>`;
+  }
+
+  if (state === 'ios-tab') {
+    html += `<div class="hint">On iPhone, notifications only work once Levels is
+      added to the Home Screen — Share, then "Add to Home Screen", then open it
+      from there. In a Safari tab they cannot arrive at all.</div>`;
+  } else if (state === 'unsupported') {
+    html += `<div class="hint">This browser has no notification support, so
+      crossings will only appear here on the page.</div>`;
+  } else if (state === 'default') {
+    html += `<div class="cta"><button class="on" data-act="enable">Turn on notifications</button>
+      <button class="off" data-act="nonag">Not now</button></div>`;
+  } else if (state === 'denied') {
+    html += `<div class="hint">Notifications are blocked for this site in your
+      browser settings, so crossings will only appear here on the page.</div>`;
+  } else if (state === 'granted') {
+    // Said once here rather than never. Alerts are evaluated by this page, so
+    // they reach the reader when it is open — a crossing on a day Levels is not
+    // opened is not queued anywhere, and claiming otherwise by staying silent
+    // would be the overpromise.
+    html += `<div class="hint">Alerts are checked while Levels is open, so this is
+      what crossed since you last looked — nothing is delivered in the background yet.</div>`;
+  }
+
+  if (pending.length) {
+    html += `<div class="cta"><button class="off" data-act="ack">Got it</button></div>`;
+  }
+  el.innerHTML = `<div class="alerts ${pending.length ? 'live' : ''}">${html}</div>`;
 }
 
 /* ---------------- the market panel ----------------
@@ -505,10 +763,15 @@ function marketDetail(rows, withBeta) {
     that is its own strength, not the market's.</p>`;
 
   if (ms && ms.effective_breadth != null) {
+    // The trailing clause only makes sense while the figure is below N. When
+    // the cap binds it would read "like 30 independent bets, not 30".
+    const fewer = ms.effective_breadth < ms.n;
     html += `<p>Across ${ms.n} names the average pair of stocks moves together
       with a correlation of <b>${ms.avg_pair_corr.toFixed(2)}</b>. That makes this
-      list behave like about <b>${ms.effective_breadth} independent bets</b>, not
-      ${ms.n} — which is why so many rows tend to go the same way at once.</p>`;
+      list behave like about <b>${ms.effective_breadth} independent
+      ${ms.effective_breadth === 1 ? 'bet' : 'bets'}</b>${fewer
+        ? `, not ${ms.n} — which is why so many rows tend to go the same way at once`
+        : ' — these names are moving largely on their own account'}.</p>`;
   }
 
   if (VRP) {
@@ -518,19 +781,29 @@ function marketDetail(rows, withBeta) {
     // a number; seeing where it falls in the distribution is a reading.
     const cells = Array.from({length: 10}, (_, i) =>
       `<i class="${Math.floor(VRP.percentile / 10) === i ? 'on' : ''}"></i>`).join('');
-    html += `<p style="margin-top:11px"><b>What options are charging.</b>
-      ${esc(VRP.implied.symbol)} is <b>${VRP.implied.value}</b>, while ${esc(VRP.benchmark)}
-      has actually delivered <b>${VRP.realised}</b> over the last
-      ${VRP.horizon_sessions} sessions — options priced
-      <b>${VRP.ratio.toFixed(2)}×</b> ${overUnder} recent delivery.</p>
+    // Stated as "N% above", never "1.23× above" — the latter reads as 123%
+    // above rather than 23%. The multiple is given separately and unqualified.
+    const overPct = Math.round((VRP.ratio - 1) * 100);
+    html += `<p style="margin-top:11px"><b>What options are charging.</b> At the
+      ${esc(VRP.as_of)} close, ${esc(VRP.implied.symbol)} was
+      <b>${VRP.implied.value}</b> against <b>${VRP.realised}</b> actually delivered by
+      ${esc(VRP.benchmark)} over the previous ${VRP.horizon_sessions} sessions — both
+      annualised volatility, in percent. Options were priced about
+      <b>${Math.abs(overPct)}% ${overUnder}</b> recent delivery
+      (${VRP.ratio.toFixed(2)}×).</p>
       <div class="mkt-scale">${cells}</div>
-      <div class="mkt-ends"><span>calm pricing</span><span>${ordinal(VRP.percentile)} percentile of
-        ${VRP.history.years} years</span><span>fearful</span></div>
-      <p style="margin-top:9px">Over those ${VRP.history.years} years implied ran
-      <b>${Math.round((a.mean_ratio - 1) * 100)}% above</b> what the index went on to
-      deliver, and was above it in <b>${a.above_pct}%</b> of windows. That is why the
-      expected-range band on each stock tends to be wider than the move that follows.
-      It is a width, not a direction.</p>`;
+      <div class="mkt-ends"><span>priced near delivery</span><span>${ordinal(VRP.percentile)} of
+        ${VRP.history.years} years</span><span>priced far above</span></div>
+      <p style="margin-top:9px">Across those ${VRP.history.years} years the index's
+      implied volatility ran <b>${Math.round((a.mean_ratio - 1) * 100)}% above</b> what
+      ${esc(VRP.benchmark)} went on to deliver, and exceeded it in <b>${a.above_pct}%</b>
+      of ${a.obs.toLocaleString('en-IN')} overlapping windows — overlapping, so those are
+      far fewer independent observations than the count suggests.</p>
+      <p>This is measured on the index, not on any single company. It is the reason a
+      symmetric expected-range band tends to be wider than the move that follows, but
+      each stock's own premium is not measured here — no free source publishes a
+      history of one name's implied volatility. And it is a width either way, never a
+      direction.</p>`;
   }
   return html;
 }
@@ -675,6 +948,7 @@ function render() {
     return `<button class="chip" data-f="${f.id}" aria-pressed="${filter === f.id}">${f.label}<span class="n">${n}</span></button>`;
   }).join('');
 
+  alertsPanel(rows);
   marketPanel(rows);
 
   const list = $('#list');
@@ -707,10 +981,23 @@ function render() {
   const missing = LIVE?.missing?.length
     ? `<br><b style="color:#FFB86B">No live price for ${LIVE.missing.map(esc).join(', ')}</b> — outside the NIFTY 500 feed; showing last close.`
     : '';
+  // A source that stopped sending crossings looks exactly like a quiet session
+  // unless it is named. Watched names are the ones where the difference costs
+  // the reader something.
+  const noCross = rows.filter(s => s.crossings === null && WATCHING.has(s.symbol));
+  const crossWarn = noCross.length
+    ? `<br><b style="color:#FFB86B">No crossing data for ${noCross.map(s => esc(s.symbol)).join(', ')}</b> — this is not "nothing crossed"; the levels source did not report it.`
+    : '';
+  // Names whose history restarted. Their 52-week figures are absent by design,
+  // and a blank that is explained is not the same as a blank that is not.
+  const broken = rows.filter(s => s.structural_break);
+  const breakNote = broken.length
+    ? `<br>${broken.map(s => `<b>${esc(s.symbol)}</b> restated on ${esc(s.structural_break)}`).join(', ')} — a corporate action the price feed does not adjust for, so history before it is a different company and longer-range figures stay blank until enough new history exists.`
+    : '';
   $('#foot').innerHTML =
     `Levels from the ${esc(IND?.as_of || '—')} close${LEVELS_LIVE ? '' : ' (last published build)'} · prices from NSE · ${shown.length} of ${rows.length} shown.<br>
      Averages and RSI are computed from daily closes. News is shown near a move, not as its cause.
-     Measurements only — not investment advice, and not SEBI-registered.${missing}`;
+     Measurements only — not investment advice, and not SEBI-registered.${missing}${crossWarn}${breakNote}`;
 }
 
 /* ---------------- data ---------------- */
@@ -745,6 +1032,10 @@ async function loadLevels() {
     }
   } catch (e) {
     console.warn('live levels unavailable, using the committed file', e);
+  } finally {
+    // Settled either way. A failed call means the committed file IS the answer,
+    // so alerts should proceed from it rather than being held back forever.
+    LEVELS_SETTLED = true;
   }
 }
 
@@ -798,6 +1089,17 @@ function paintAge() {
 
 /* ---------------- events ---------------- */
 $('#list').addEventListener('click', e => {
+  // The watch toggle sits inside the row, and the row is itself a toggle.
+  // Handled first and returned from, or watching a stock would also collapse
+  // the panel the button lives in.
+  const w = e.target.closest('[data-watch]');
+  if (w) {
+    const sym = w.dataset.watch;
+    WATCHING.has(sym) ? WATCHING.delete(sym) : WATCHING.add(sym);
+    lsSet(LS_WATCH, [...WATCHING]);
+    render();
+    return;
+  }
   const row = e.target.closest('.row');
   if (!row) return;
   const sym = row.dataset.sym;
@@ -807,6 +1109,25 @@ $('#list').addEventListener('click', e => {
     const el = document.querySelector(`.row[data-sym="${CSS.escape(sym)}"]`);
     if (el && el.getBoundingClientRect().top < 90) el.scrollIntoView({block: 'center', behavior: 'smooth'});
   }
+});
+$('#alerts').addEventListener('click', async e => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const act = b.dataset.act;
+  if (act === 'enable') {
+    // Must be called from a user gesture — browsers reject a permission
+    // request made on load, and the rejection is silent.
+    try { await Notification.requestPermission(); } catch (err) { console.warn(err); }
+  } else if (act === 'ack') {
+    mark(ACKED, LS_ACKED, unacked(watchedCrossings(merge())));
+  } else if (act === 'nonag') {
+    // "Not now" answers the permission offer and nothing else. Wiring it to
+    // acknowledge crossings was wrong in both directions: with news on screen
+    // it silently dismissed unread crossings, and with none it acknowledged an
+    // empty list and so re-rendered the same prompt forever.
+    lsSet(LS_NONAG, true);
+  }
+  render();
 });
 $('#mkt').addEventListener('click', e => {
   if (!e.target.closest('.mktbtn')) return;
