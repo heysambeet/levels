@@ -60,6 +60,24 @@ def main() -> int:
         fail(f"symbol sets differ: worker-only {set(wrows) - {t['symbol'] for t in targets}}, "
              f"local-only {{t['symbol'] for t in targets}} - set(wrows)")
 
+    # The market layer is passed through from the committed manifest rather than
+    # recomputed in the Worker, so what is checked here is that it survives the
+    # trip at all. It is checked because losing it is silent: the page simply
+    # stops drawing its market panel the moment live levels replace the file,
+    # with no error anywhere. That is exactly how it broke once already.
+    manifest = json.loads((Path(__file__).resolve().parent.parent
+                           / "web" / "data" / "indicators.json").read_text())
+    if not worker.get("benchmark"):
+        fail("worker response names no benchmark — betas below it mean nothing")
+    if not worker.get("market_structure"):
+        fail("worker response carries no market_structure block")
+    mbeta = {s["symbol"]: s.get("beta") for s in manifest["stocks"]}
+    for sym, w in wrows.items():
+        if "beta" not in w:
+            fail(f"{sym}: worker dropped the beta field entirely")
+        elif w.get("beta") != mbeta.get(sym):
+            fail(f"{sym}: worker beta {w.get('beta')} != manifest {mbeta.get(sym)}")
+
     checked = 0
     for t in targets:
         sym = t["symbol"]
@@ -67,7 +85,9 @@ def main() -> int:
         if not w:
             fail(f"{sym}: missing from worker response")
             continue
-        local = build(sym, t, fetch_candles(t["isin"]))
+        # fetch_candles takes the full Upstox instrument key, not a bare ISIN —
+        # the index has no ISIN and beta needs both series down the same path.
+        local = build(sym, t, fetch_candles(f"NSE_EQ|{t['isin']}"))
         checked += 1
 
         # A different as_of means one side saw a bar the other did not — real,

@@ -41,7 +41,8 @@ would fail.
 
 ```bash
 python3 tool/build_aliases.py        # after any watchlist change
-python3 tool/build_indicators.py     # once after each close — 30 stocks, ~5s
+python3 tool/build_indicators.py     # once after each close — 30 stocks, ~8s
+python3 tool/build_vrp.py            # index + India VIX, 10y in chunks, ~3s
 python3 tool/dev_proxy.py            # http://localhost:8900
 ```
 
@@ -151,6 +152,22 @@ a wrong number, not an error.
 - **Never fan candle requests out in parallel.** Fifty at once tripped rate
   limiting and a measured **573-second** block. Serially the same fifty take
   under three seconds, so there is no upside to trying.
+- **Upstox rejects any daily window wider than 3,652 days** — exactly 10.00
+  years — with HTTP 400 `UDAPI1148 "Invalid date range"`. Asking for 3,800
+  days returns *nothing*, which reads like the index having no history rather
+  than a range limit. Ten years has to be assembled from chunks, deduplicated
+  by date because adjacent chunks share a boundary day.
+- **Index series take a full instrument key, not an ISIN.** `NSE_INDEX|Nifty
+  50` and `NSE_INDEX|India VIX` have no ISIN, so `fetch_candles` takes the
+  whole key; passing a bare ISIN 400s. Both the index and every stock go down
+  the same path so a beta can never be fitted against a differently-fetched
+  series.
+- **NSE republishes about every 55 seconds, not every 5.** Measured live on
+  2026-08-19 with the market open: 11:03:10 → 11:04:03 → 11:05:00. The code
+  previously claimed 5s in a comment. The 10s poll is kept deliberately, but
+  it means most refreshes legitimately return an unchanged number — so the
+  page shows NSE's own stamp beside its "updated Xs ago" clock rather than
+  implying the exchange is as fresh as the fetch.
 - **Send a browser User-Agent everywhere.** Upstox answers 403 to a default
   script agent; NSE kills the HTTP/2 stream, which surfaces as a *connection
   error* rather than a status code and reads like an outage.
@@ -212,6 +229,66 @@ The band is **symmetric by construction** and the response carries
 with an empty array, so availability is judged on row count and
 `underlyingValue`, never on the status code.
 
+## Market, not thirty stories
+
+Before any row, the page answers a prior question: **is today about these
+companies, or about the market?** Thirty names down 1% on a day the index is
+down 1.2% is one story, not thirty, and the news below will not explain it
+because there is nothing company-specific to explain.
+
+Raw breadth cannot say that; breadth net of each name's usual sensitivity to
+the index can. Each stock carries a **beta** to the NIFTY 50 from one year of
+daily returns, and the page shows the part of its move the index does not
+account for — `move − beta × index` — as **"vs mkt"**.
+
+Measured on 2026-08-19, market open, index −0.44%: **8 of 30 names were up,
+but 15 of 30 were up on their own account.** Same day, COALINDIA fell 1.82%
+and 1.71pp of that was its own (beta 0.25 — worth reading the news), while
+BAJFINANCE fell 1.02% with only 0.36pp its own (beta 1.48 — mostly the tide).
+
+The decomposition is sound rather than merely plausible: average pairwise
+correlation across the watchlist is **0.273**, and subtracting beta × index
+drops it to **−0.013**. One common factor is doing the work.
+
+Two guards that matter:
+- **A null beta is never treated as zero.** Assuming zero for a name with too
+  little history would relabel the market's move as the company's — exactly
+  the error this exists to prevent. The row shows no "vs mkt" line instead.
+- **The line is gated on whether the *index* moved, not on how much of that
+  stock the index explains.** Gating on the latter was the first attempt and
+  it was backwards: it removed the line from precisely the low-beta rows where
+  the answer is "this really is about the company."
+
+Effective breadth, `N / (1 + ρ(N−1))`, says the 30 names behave like about
+**3.4 independent bets**. It is capped at N — with mildly negative correlation
+the raw formula returns more independent bets than there are names (12.5 from
+five), which a reader would take at face value.
+
+### The volatility premium
+
+`web/data/vrp.json`, built by `tool/build_vrp.py`, compares **India VIX**
+against what the NIFTY 50 has actually delivered, over ten years.
+
+Measured: implied ran **+33.7%** above subsequently realised volatility and was
+above it in **83.1%** of windows (n=2,455). That is *why* the expected-range
+band on each stock tends to be wider than the move that follows — the two
+features are one idea, and the panel says so.
+
+The horizon is deliberate. India VIX is a 30-**calendar**-day implied
+volatility ≈ 21 sessions, so realised is measured over 21 sessions. Using 30
+sessions compares a one-month forward with a six-week past, and it is not a
+rounding difference: on 2026-08-18 the same day reads **1.23× (41st
+percentile)** at 21 sessions and **1.03× (17th)** at 30. The *frequency* of
+implied exceeding realised is stable at ~83% either way; only the magnitude
+moves.
+
+**Per-stock volatility premia are not built, on purpose.** No free source
+publishes a history of a single name's implied volatility — it would have to
+accumulate from daily snapshots. Fed by a ritual that currently runs by hand,
+that sample would be biased toward the days someone remembered, and a
+percentile from it would be confidently wrong. The prerequisite is an
+automated daily run, not more code.
+
 ## Decisions
 
 - **News is shown near a move, never as its cause.** Most 1% moves have no
@@ -242,9 +319,8 @@ with an empty array, so availability is judged on row count and
 - Alert delivery and the rules that fire one. Confirmed crossings on a
   chosen shortlist is the agreed shape; notifications are the chosen channel,
   which on iPhone means the page must be added to the Home Screen.
-- **Nothing about live intraday behaviour is measured yet** — everything here
-  was validated with the market closed. How fast prices update mid-session,
-  and how long after a move an explainer appears, both need a weekday.
+- How long after a move a published explainer appears (expect 30–90 min).
+  Still unmeasured; needs watching a single name through an actual move.
 
 ## Not advice
 

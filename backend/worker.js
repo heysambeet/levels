@@ -250,6 +250,16 @@ async function handleIndicators() {
         dma200: sma(closes, 200),
         rsi14: rsiWilder(closes),
         week52: window52w(bars),
+        // Beta rides along from the manifest rather than being recomputed here.
+        // It is a one-year regression against the index: it moves in the third
+        // decimal from one session to the next, and recomputing it live would
+        // cost an extra index fetch on every request plus a second
+        // implementation to keep in parity — for a number no reader could tell
+        // apart. The daily builder owns it; this endpoint owns what actually
+        // changes with a new bar.
+        beta: t.beta ?? null,
+        r2: t.r2 ?? null,
+        own_vol_pct: t.own_vol_pct ?? null,
       };
       // An indicator without the history to mean anything is null, never a
       // number computed from a short window.
@@ -276,6 +286,10 @@ async function handleIndicators() {
       source: 'worker',
       watchlist_max: manifest.watchlist_max ?? null,
       placeholder_watchlist: manifest.placeholder_watchlist ?? null,
+      // Both describe the watchlist as a whole rather than any one bar, so
+      // they pass through unchanged for the same reason beta does.
+      benchmark: manifest.benchmark ?? null,
+      market_structure: manifest.market_structure ?? null,
       failed,
       stocks,
     },

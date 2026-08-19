@@ -35,9 +35,13 @@ export const ROUTES = {
     // watchlist coverage.
     index_upstream:
       'https://www.nseindia.com/api/NextApi/apiClient/marketWatchApi?functionName=getIndicesData&symbol=NIFTY%2050',
-    // NSE republishes roughly every 5s. Matching that means the cache absorbs
-    // a refresh loop without ever being the reason the screen lags — anything
-    // longer and the page waits on us rather than on the exchange.
+    // Measured live on a trading day (2026-08-19, market open): NSE stamps a
+    // new timestamp roughly every 55 SECONDS — 11:03:10, 11:04:03, 11:05:00 —
+    // not every 5s as previously assumed here. The short TTL is kept anyway so
+    // the cache is never the reason a new print is late; it just means most
+    // refreshes legitimately return the same numbers. The page shows NSE's own
+    // stamp beside its "updated Xs ago" clock, so the reader sees exchange
+    // freshness rather than our fetch freshness.
     ttl: 5,
     type: 'application/json',
   },

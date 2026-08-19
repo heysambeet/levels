@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import statistics
 import sys
 import time
 import urllib.error
@@ -82,8 +84,13 @@ def get(url: str, tries: int = 3, timeout: int = 30) -> bytes:
 
 # ---------------------------------------------------------------- candles
 
-def fetch_candles(isin: str) -> list[dict]:
+def fetch_candles(instrument_key: str) -> list[dict]:
     """Daily bars, returned **oldest-first**.
+
+    `instrument_key` is the full Upstox key — `NSE_EQ|<isin>` for a company,
+    `NSE_INDEX|Nifty 50` for the index. It is passed whole rather than built
+    from an ISIN because the index has no ISIN and beta needs both series to
+    come through exactly the same path.
 
     Upstox serves them newest-first. Every indicator here is order-sensitive,
     and getting it wrong does not raise — it silently averages the oldest bars
@@ -94,7 +101,7 @@ def fetch_candles(isin: str) -> list[dict]:
     """
     today = datetime.now(IST).date()
     frm = today - timedelta(days=HISTORY_DAYS)
-    key = urllib.parse.quote(f"NSE_EQ|{isin}", safe="")
+    key = urllib.parse.quote(instrument_key, safe="")
     url = f"{UPSTOX}/{key}/day/{today.isoformat()}/{frm.isoformat()}"
     payload = json.loads(get(url))
     if payload.get("status") != "success":
@@ -166,6 +173,119 @@ def window_52w(bars: list[dict], asof: date) -> dict | None:
             "low": round(lo["low"], 2), "low_date": lo["date"]}
 
 
+# ---------------------------------------------------------------- market fit
+#
+# Beta exists here to answer the question the product is actually for: "why is
+# this down 1%?" Very often the answer is "it isn't, particularly — the whole
+# market is down and this name is behaving normally." Without a beta the page
+# cannot tell those two cases apart, and every market-wide dip sends the reader
+# hunting for company news that does not exist.
+#
+# Measured on the current watchlist: the market explains a median 33% of a
+# name's daily variance, so two thirds of a typical move really is its own —
+# which is exactly why the third that is not needs separating out.
+#
+# The check that this decomposition is sound: average pairwise correlation
+# across the watchlist is 0.273, and after subtracting beta x market it falls
+# to -0.013. Removing one common factor leaves residuals that are essentially
+# uncorrelated, which is what a correct market model should do.
+
+BETA_WINDOW_DAYS = 365
+# A beta from a short window is noise wearing a decimal point. Six months of
+# sessions is the floor; below it the field is null, like every other indicator
+# here that lacks the history to mean anything.
+MIN_BETA_OBS = 120
+
+NIFTY_KEY = "NSE_INDEX|Nifty 50"
+
+
+def log_returns(bars: list[dict]) -> dict[str, float]:
+    """date -> log return. Keyed by date so two series align on trading days
+    rather than on position, which silently misaligns after any holiday one
+    series observed and the other did not."""
+    out = {}
+    for i in range(1, len(bars)):
+        prev, cur = bars[i - 1]["close"], bars[i]["close"]
+        if prev > 0 and cur > 0:
+            out[bars[i]["date"]] = math.log(cur / prev)
+    return out
+
+
+def fit_market(stock: dict[str, float], market: dict[str, float],
+               asof: date) -> dict | None:
+    """OLS of the stock's daily returns on the index's, over one year.
+
+    Returns beta, the R^2 that says how much of the move the market explains at
+    all, and the annualised volatility of what is left over.
+    """
+    cutoff = (asof - timedelta(days=BETA_WINDOW_DAYS)).isoformat()
+    common = sorted(d for d in stock.keys() & market.keys() if d >= cutoff)
+    if len(common) < MIN_BETA_OBS:
+        return None
+    x = [market[d] for d in common]
+    y = [stock[d] for d in common]
+    mx, my = statistics.fmean(x), statistics.fmean(y)
+    sxx = sum((a - mx) ** 2 for a in x)
+    if sxx <= 0:
+        return None
+    beta = sum((a - mx) * (b - my) for a, b in zip(x, y)) / sxx
+    syy = sum((b - my) ** 2 for b in y)
+    resid = [b - my - beta * (a - mx) for a, b in zip(x, y)]
+    return {
+        "beta": round(beta, 3),
+        "r2": round(1 - sum(r * r for r in resid) / syy, 3) if syy > 0 else None,
+        "own_vol_pct": round(statistics.pstdev(resid) * math.sqrt(252) * 100, 1),
+        "obs": len(common),
+    }
+
+
+def market_structure(returns: dict[str, dict[str, float]], asof: date) -> dict | None:
+    """Average pairwise correlation across the watchlist, and what it implies
+    about how many genuinely independent names are in it.
+
+    Grinold's effective breadth, N / (1 + rho(N-1)), is the standard way to say
+    that thirty correlated holdings are not thirty separate bets. On the
+    current list rho = 0.27 puts it near three.
+    """
+    cutoff = (asof - timedelta(days=BETA_WINDOW_DAYS)).isoformat()
+    syms = sorted(returns)
+    if len(syms) < 2:
+        return None
+    shared = set.intersection(*[set(returns[s]) for s in syms])
+    common = sorted(d for d in shared if d >= cutoff)
+    if len(common) < MIN_BETA_OBS:
+        return None
+    series = {s: [returns[s][d] for d in common] for s in syms}
+    stats = {}
+    for s in syms:
+        m = statistics.fmean(series[s])
+        sd = statistics.pstdev(series[s])
+        stats[s] = (m, sd)
+    pairs = []
+    for i in range(len(syms)):
+        for j in range(i + 1, len(syms)):
+            a, b = syms[i], syms[j]
+            (ma, sa), (mb, sb) = stats[a], stats[b]
+            if sa <= 0 or sb <= 0:
+                continue
+            cov = sum((p - ma) * (q - mb) for p, q in zip(series[a], series[b])) / len(common)
+            pairs.append(cov / (sa * sb))
+    if not pairs:
+        return None
+    rho = statistics.fmean(pairs)
+    n = len(syms)
+    denom = 1 + rho * (n - 1)
+    return {
+        "avg_pair_corr": round(rho, 3),
+        # Guarded: a rho at or below -1/(N-1) drives the denominator to zero or
+        # negative and the formula stops meaning anything. It cannot exceed N
+        # either — that would claim more independent bets than there are names.
+        "effective_breadth": round(min(n, n / denom), 1) if denom > 0.05 else None,
+        "n": n,
+        "obs": len(common),
+    }
+
+
 def build(sym: str, meta: dict, bars: list[dict]) -> dict:
     closes = [b["close"] for b in bars]
     last = bars[-1]
@@ -193,6 +313,71 @@ def build(sym: str, meta: dict, bars: list[dict]) -> dict:
     return row
 
 
+# ---------------------------------------------------------------- payload
+#
+# One implementation, two callers: this CLI and tool/dev_proxy.py. The proxy
+# used to re-assemble the payload itself, which is how it came to serve rows
+# without a beta while the Worker served rows with one — the page then silently
+# dropped its market panel the moment live levels replaced the committed file.
+# Nothing here may be restated by a caller.
+
+def build_payload(targets: list[dict], wl: dict, source: str,
+                  gap_s: float = REQUEST_GAP_S) -> tuple[dict, list[str]]:
+    """Fetch candles for every target and assemble the whole daily layer.
+
+    Returns (payload, failed). Callers decide what a failure means: the CLI
+    refuses to write a short watchlist, the dev proxy reports it inline.
+    """
+    # The benchmark, fetched once, is what every beta is measured against. If
+    # it fails the betas are simply absent and the page falls back to raw
+    # moves — the honest degradation, and the reason this is not fatal.
+    try:
+        market_rets = log_returns(fetch_candles(NIFTY_KEY))
+    except Exception as e:                                    # noqa: BLE001
+        market_rets = {}
+        print(f"  WARN benchmark fetch failed, betas will be null: {e}", file=sys.stderr)
+    time.sleep(gap_s)
+
+    rows, failed, returns = [], [], {}
+    for c in targets:
+        try:
+            bars = fetch_candles(f"NSE_EQ|{c['isin']}")
+            row = build(c["symbol"], c, bars)
+            rets = log_returns(bars)
+            returns[c["symbol"]] = rets
+            fit = fit_market(rets, market_rets, date.fromisoformat(row["as_of"])) \
+                if market_rets else None
+            if fit:
+                row.update(fit)
+            else:
+                row["beta"] = row["r2"] = row["own_vol_pct"] = None
+                row["insufficient"].append("beta")
+            rows.append(row)
+        except Exception as e:                                # noqa: BLE001
+            failed.append(c["symbol"])
+            print(f"  WARN {c['symbol']}: {e}", file=sys.stderr)
+        time.sleep(gap_s)
+
+    rows.sort(key=lambda r: r["symbol"])
+    as_of = max((r["as_of"] for r in rows), default=None)
+    structure = market_structure(returns, date.fromisoformat(as_of)) if rows else None
+    payload = {
+        "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
+        "as_of": as_of,
+        "source": source,
+        "watchlist_max": wl["max"],
+        "placeholder_watchlist": wl["placeholder"],
+        "count": len(rows),
+        "failed": failed,
+        # The benchmark is named in the file rather than assumed by the reader:
+        # a beta is meaningless without saying beta to what.
+        "benchmark": {"symbol": "NIFTY 50", "window_days": BETA_WINDOW_DAYS} if market_rets else None,
+        "market_structure": structure,
+        "stocks": rows,
+    }
+    return payload, failed
+
+
 # ---------------------------------------------------------------- main
 
 def main() -> int:
@@ -215,15 +400,9 @@ def main() -> int:
     if args.limit:
         targets = targets[: args.limit]
 
-    rows, failed = [], []
-    for c in targets:
-        try:
-            bars = fetch_candles(c["isin"])
-            rows.append(build(c["symbol"], c, bars))
-        except Exception as e:
-            failed.append(c["symbol"])
-            print(f"  WARN {c['symbol']}: {e}", file=sys.stderr)
-        time.sleep(REQUEST_GAP_S)
+    out, failed = build_payload(targets, wl, source="build_indicators.py")
+    rows = out["stocks"]
+    structure = out["market_structure"]
 
     # Every named company must appear. A watchlist is explicit, so a missing
     # name is a failure rather than an acceptable gap.
@@ -232,23 +411,21 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    rows.sort(key=lambda r: r["symbol"])
     thin = [r["symbol"] for r in rows if r["insufficient"]]
-    out = {
-        "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
-        "as_of": max(r["as_of"] for r in rows),
-        "watchlist_max": wl["max"],
-        "placeholder_watchlist": wl["placeholder"],
-        "count": len(rows),
-        "failed": failed,
-        "stocks": rows,
-    }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(out, separators=(",", ":")) + "\n")
 
     kb = args.out.stat().st_size / 1024
     print(f"wrote {args.out} ({kb:.0f} KB) — {len(rows)} stocks, session {out['as_of']}, "
           f"{time.time()-started:.1f}s")
+    if structure:
+        print(f"  market: avg pairwise corr {structure['avg_pair_corr']}, "
+              f"{structure['n']} names behave like {structure['effective_breadth']} "
+              f"independent bets ({structure['obs']} sessions)")
+    betas = [r["beta"] for r in rows if r.get("beta") is not None]
+    if betas:
+        print(f"  beta vs NIFTY 50: {min(betas):.2f}–{max(betas):.2f}, "
+              f"median {statistics.median(betas):.2f}")
     if failed:
         print(f"  failed: {', '.join(failed)}")
     if thin:

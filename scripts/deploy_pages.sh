@@ -12,9 +12,14 @@ cd "$(dirname "$0")/.."
 echo "==> rebuild daily data"
 python3 tool/build_indicators.py
 python3 tool/build_aliases.py
+# The volatility premium moves with each close like everything else here. It is
+# its own tool because it reads the index and India VIX rather than the
+# watchlist, and a watchlist change must not force a ten-year refetch.
+python3 tool/build_vrp.py
 
 echo "==> tests"
 python3 tool/test_indicators.py
+python3 tool/test_market.py
 python3 tool/test_proxy_parity.py
 python3 tool/test_page_loads.py
 

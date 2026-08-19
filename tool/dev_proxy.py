@@ -191,27 +191,17 @@ def local_indicators() -> dict:
     if _ind_cache and time.time() - _ind_cache[0] < ttl:
         return _ind_cache[1]
 
-    from build_indicators import build, fetch_candles
+    # The whole payload comes from build_indicators.build_payload — the one
+    # implementation. Re-assembling it here is what previously let this proxy
+    # serve rows without a beta while the Worker served rows with one, so the
+    # page lost its market panel the instant live levels replaced the committed
+    # file. Serial inside; parallel fan-out earns a measured 573s ban.
+    from build_indicators import build_payload
     from symbols import load_instrument_map, load_watchlist, resolve
 
     wl = load_watchlist()
-    rows, failed = [], []
-    for t in resolve(wl["symbols"], load_instrument_map()):
-        try:
-            rows.append(build(t["symbol"], t, fetch_candles(t["isin"])))
-        except Exception:
-            failed.append(t["symbol"])
-        time.sleep(0.06)          # serial; parallel fan-out earns a 573s ban
-    out = {
-        "generated_at": datetime.now(IST).isoformat(timespec="seconds"),
-        "as_of": max((r["as_of"] for r in rows), default=None),
-        "count": len(rows),
-        "source": "dev_proxy",
-        "watchlist_max": wl["max"],
-        "placeholder_watchlist": wl["placeholder"],
-        "failed": failed,
-        "stocks": sorted(rows, key=lambda r: r["symbol"]),
-    }
+    out, _ = build_payload(resolve(wl["symbols"], load_instrument_map()),
+                           wl, source="dev_proxy")
     _ind_cache = (time.time(), out)
     return out
 
