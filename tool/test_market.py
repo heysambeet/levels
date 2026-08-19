@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import statistics
 import sys
 from datetime import date, timedelta
@@ -23,10 +24,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from build_indicators import (  # noqa: E402
     BETA_WINDOW_DAYS,
+    MIN_BARS_52W,
     MIN_BETA_OBS,
+    STRUCTURAL_BREAK_LOG,
+    build,
+    crossings,
     fit_market,
     log_returns,
     market_structure,
+    usable_history,
 )
 import build_vrp  # noqa: E402
 
@@ -284,6 +290,298 @@ def test_vrp_chunking_stays_under_the_upstox_range_cap():
         fail(f"chunk of {build_vrp.CHUNK_DAYS} days is at or over the 3652-day cap")
 
 
+# -------------------------------------------------- corporate actions
+
+def test_a_demerger_step_is_not_treated_as_a_daily_return():
+    """The measured case. TMPV closed 660.75 then 395.45 across the Tata Motors
+    demerger; Upstox does not adjust for it. Read as a return it published a
+    52-week high of 739.70 for a stock trading at 322.80, R^2 0.121 against a
+    true 0.399, and insufficient: [] — every number asserted as sound."""
+    bars = _bars([660.75] * 260 + [395.45] + [400.0] * 30)
+    cut, brk = usable_history(bars)
+    if brk != bars[260]["date"]:
+        return fail(f"break not detected at the step: got {brk}")
+    if len(cut) != 31:
+        fail(f"usable history {len(cut)} bars, expected 31 (the break bar onward)")
+    if cut[0]["close"] != 395.45:
+        fail("usable history must START at the break bar, which is the new basis")
+    # The offending step must be gone from the returns entirely.
+    worst = max(abs(v) for v in log_returns(cut).values()) if len(cut) > 1 else 0
+    if worst > STRUCTURAL_BREAK_LOG:
+        fail(f"a step of {worst:.3f} survived the cut")
+
+
+def test_usable_history_is_idempotent():
+    """Cutting twice must not cut twice — the returned series starts at the
+    break, so the step is outside it and a second pass finds nothing."""
+    bars = _bars([100.0] * 100 + [40.0] + [41.0] * 100)
+    once, brk1 = usable_history(bars)
+    twice, brk2 = usable_history(once)
+    if brk2 is not None or len(twice) != len(once):
+        fail(f"second pass cut again: {brk1} then {brk2}, {len(once)} -> {len(twice)}")
+
+
+def test_an_ordinary_crash_is_not_mistaken_for_a_corporate_action():
+    """A real fall must survive. Indian price bands cap a session well below the
+    threshold, so a 15% collapse is trading and has to stay in the history."""
+    bars = _bars([100.0] * 100 + [85.0] + [86.0] * 50)
+    cut, brk = usable_history(bars)
+    if brk is not None or len(cut) != len(bars):
+        fail(f"a -15% session was treated as a corporate action (break {brk})")
+
+
+def test_indicators_spanning_a_break_go_null_rather_than_wrong():
+    """The whole point: after a restatement the long-range figures must be
+    absent, not computed across two different companies."""
+    bars = _bars([660.0] * LONG + [395.0] + [400.0] * 40)
+    row = build("X", {"isin": "I", "name": "X"}, bars)
+    if row["week52"] is not None:
+        fail("52-week range computed across a corporate action")
+    if "week52" not in row["insufficient"]:
+        fail("a null 52-week range was not declared insufficient")
+    if row["structural_break"] != bars[LONG]["date"]:
+        fail(f"the break date is not published: {row['structural_break']}")
+    if row["dma200"] is not None:
+        fail("a 200-day average was computed from 41 post-break sessions")
+
+
+def test_the_beta_fit_is_given_the_same_cut_history_as_the_indicators():
+    """build_payload must feed fit_market from usable_history, not raw bars.
+
+    Checked two ways because the code path needs a network to run: the source
+    must compose them, and the published file must be arithmetically consistent
+    with a fit that saw only post-break sessions. Fitting across the break is
+    what published TMPV's R^2 as 0.121 against a true 0.424.
+    """
+    src = (ROOT / "tool" / "build_indicators.py").read_text()
+    if "clean, _ = usable_history(bars)" not in src or "log_returns(clean)" not in src:
+        fail("build_payload no longer fits beta on the corporate-action-cut history")
+
+    p = ROOT / "web" / "data" / "indicators.json"
+    if not p.exists():
+        return
+    d = json.loads(p.read_text())
+    for s in d["stocks"]:
+        brk = s.get("structural_break")
+        if not brk or s.get("obs") is None:
+            continue
+        days = (date.fromisoformat(s["as_of"]) - date.fromisoformat(brk)).days
+        # Indian sessions run ~247 per 365 calendar days (0.677). Allowing 0.72
+        # plus a few bars is generous; a fit that reached back across the break
+        # cannot fit under it.
+        ceiling = int(days * 0.72) + 5
+        if s["obs"] > ceiling:
+            fail(f"{s['symbol']}: beta used {s['obs']} sessions but only ~{ceiling} exist "
+                 f"since its {brk} restatement — the fit spans the corporate action")
+
+
+def test_the_break_threshold_sits_above_every_nse_price_band():
+    """Set generous on purpose. Missing a real break publishes a wrong number;
+    a false positive only shortens a history and nulls an indicator, which the
+    page already states plainly."""
+    if not (0.15 < STRUCTURAL_BREAK_LOG < 0.30):
+        fail(f"threshold {STRUCTURAL_BREAK_LOG:.3f} is outside the defensible range")
+
+
+# ------------------------------------------------------------- crossings
+
+# _bars lays one bar on each CONSECUTIVE CALENDAR day, so a series of N bars
+# spans N days. Any test of a 52-week rule therefore needs more than 365 of
+# them, or the series does not reach back a year and the coverage guard — quite
+# rightly — refuses to call anything a 52-week extreme.
+LONG = 420
+
+
+def _bars(closes: list[float], start: str = "2024-01-01") -> list[dict]:
+    d0 = date.fromisoformat(start)
+    return [{"date": (d0 + timedelta(days=i)).isoformat(), "close": float(c),
+             "high": float(c), "low": float(c), "open": float(c)}
+            for i, c in enumerate(closes)]
+
+
+def _cross(bars):
+    return crossings(bars, date.fromisoformat(bars[-1]["date"]))
+
+
+def test_crossing_is_detected_in_both_directions():
+    up = _cross(_bars([100.0] * 49 + [90.0, 110.0]))
+    if [(e["level"], e["direction"]) for e in up] != [("50-day average", "above")]:
+        fail(f"upward crossing not detected: {up}")
+    down = _cross(_bars([100.0] * 49 + [110.0, 90.0]))
+    if [(e["level"], e["direction"]) for e in down] != [("50-day average", "below")]:
+        fail(f"downward crossing not detected: {down}")
+
+
+def test_no_crossing_when_the_price_stays_one_side():
+    if _cross(_bars([100.0] * 49 + [90.0, 92.0])):
+        fail("reported a crossing without one")
+    if _cross(_bars([100.0] * 49 + [110.0, 112.0])):
+        fail("reported a crossing without one")
+
+
+def test_crossing_compares_against_each_session_own_average():
+    """The average moves too. Testing today's close against YESTERDAY's average
+    manufactures crossings out of the average's own drift — on a steadily rising
+    series the price is always above both, and nothing should fire."""
+    rising = [100.0 + i * 0.5 for i in range(80)]
+    if _cross(_bars(rising)):
+        fail("a steadily rising series produced a crossing")
+    falling = [200.0 - i * 0.5 for i in range(80)]
+    if _cross(_bars(falling)):
+        fail("a steadily falling series produced a crossing")
+
+
+def test_sitting_exactly_on_the_level_is_not_a_crossing():
+    """A perfectly flat series sits exactly on its own average. That is not a
+    crossing in either direction, and calling it one would fire an alert every
+    single session for a stock that has not moved at all."""
+    if _cross(_bars([100.0] * 60)):
+        fail("a flat series produced a crossing")
+
+
+def test_a_new_extreme_reports_once_not_every_day_of_the_run():
+    """Measured on RELIANCE, a year replay produced new closing lows on three
+    consecutive sessions — three notifications for one slide. Only the first of
+    a run is news; a reader alerted daily for a fortnight stops reading."""
+    n = LONG
+    # A long flat history, then four consecutive new lows.
+    closes = [100.0] * n + [90.0, 89.0, 88.0, 87.0]
+    bars = _bars(closes)
+    fired = []
+    for i in range(n, len(bars)):
+        for e in crossings(bars[:i + 1], date.fromisoformat(bars[i]["date"])):
+            if e["type"] == "extreme":
+                fired.append(bars[i]["date"])
+    if len(fired) != 1:
+        fail(f"new 52-week low fired {len(fired)} times over one run: {fired}")
+
+
+def test_a_new_extreme_reports_again_after_the_run_breaks():
+    """Suppression must not be permanent — a second, separate slide is news
+    again. RELIANCE's real history shows two distinct runs a week apart."""
+    n = LONG
+    closes = [100.0] * n + [90.0, 89.0] + [95.0] * 6 + [85.0]
+    bars = _bars(closes)
+    fired = []
+    for i in range(n, len(bars)):
+        for e in crossings(bars[:i + 1], date.fromisoformat(bars[i]["date"])):
+            if e["type"] == "extreme":
+                fired.append(bars[i]["date"])
+    if len(fired) != 2:
+        fail(f"expected two separate runs to fire, got {len(fired)}: {fired}")
+
+
+def test_extreme_is_measured_against_the_window_excluding_today():
+    """Including today's close in the record it is tested against means nothing
+    can ever be a new high, and the alert silently never fires."""
+    n = LONG
+    bars = _bars([100.0] * n + [130.0])
+    ev = [e for e in _cross(bars) if e["type"] == "extreme"]
+    if len(ev) != 1 or ev[0]["direction"] != "above":
+        return fail(f"new closing high not detected: {ev}")
+    near("record broken", ev[0]["value"], 100.0, 0.01)
+
+
+def test_no_extreme_without_a_year_of_history():
+    bars = _bars([100.0] * 50 + [130.0])
+    if [e for e in _cross(bars) if e["type"] == "extreme"]:
+        fail("claimed a 52-week extreme from 51 sessions")
+
+
+def test_no_extreme_when_the_history_does_not_reach_back_a_full_year():
+    """Counting bars is the tempting guard and it is wrong — it catches a series
+    full of holes but cannot tell whether the series covers a year at all. A
+    name with 201-246 sessions passes the count and covers under twelve months,
+    and the row then announces a '52-week closing high' beside a 52-week range
+    reading n/a. Measured: 220 sessions spanning 307 days did exactly that."""
+    d, bars = date(2025, 10, 15), []
+    while len(bars) < 220:                       # weekdays only, like real sessions
+        if d.weekday() < 5:
+            bars.append({"date": d.isoformat()})
+        d += timedelta(days=1)
+    for i, b in enumerate(bars):
+        c = 100.0 + i * 0.05 if i < 200 else 105.0
+        b.update(close=c, high=c, low=c, open=c)
+    bars[-1].update(close=120.0, high=120.0, low=120.0, open=120.0)
+
+    span = (date.fromisoformat(bars[-1]["date"]) - date.fromisoformat(bars[0]["date"])).days
+    if span >= 365:
+        return fail(f"test is broken: {span} days is a full year, prove nothing")
+    row = build("TESTCO", {"isin": "I", "name": "T"}, bars)
+    if row["week52"] is not None:
+        return fail("test is broken: the 52-week range should already be null here")
+    if [e for e in _cross(bars) if e["type"] == "extreme"]:
+        fail(f"claimed a 52-week extreme from {len(bars)} sessions spanning {span} days, "
+             "while the row's own 52-week range reads n/a")
+
+
+def test_crossings_in_the_generated_file_are_well_formed():
+    p = ROOT / "web" / "data" / "indicators.json"
+    if not p.exists():
+        return fail("indicators.json missing")
+    d = json.loads(p.read_text())
+    for s in d["stocks"]:
+        for c in s.get("crossings", []):
+            if c["direction"] not in ("above", "below"):
+                fail(f"{s['symbol']}: bad direction {c['direction']!r}")
+            if c["type"] not in ("dma", "extreme"):
+                fail(f"{s['symbol']}: bad type {c['type']!r}")
+            # The close really must be the side the event claims.
+            if c["direction"] == "above" and c["close"] <= c["value"]:
+                fail(f"{s['symbol']}: says above but {c['close']} <= {c['value']}")
+            if c["direction"] == "below" and c["close"] >= c["value"]:
+                fail(f"{s['symbol']}: says below but {c['close']} >= {c['value']}")
+            # At most one event per level per stock per session.
+        levels = [c["level"] for c in s.get("crossings", [])]
+        if len(levels) != len(set(levels)):
+            fail(f"{s['symbol']}: duplicate level in one session: {levels}")
+
+
+def test_the_worker_implements_crossings_rather_than_passing_them_through():
+    """The Worker exists to reflect the newest printed bar. A crossing carried
+    over from a manifest built on an older bar is yesterday's news shown as
+    today's — so it must compute its own, and the parity test must compare
+    them."""
+    worker = (ROOT / "backend" / "worker.js").read_text()
+    if "function crossings(" not in worker:
+        fail("worker.js does not implement crossings")
+    if "newClosingExtreme" not in worker:
+        fail("worker.js is missing the run-suppression helper")
+    parity = (ROOT / "tool" / "test_worker_indicators.py").read_text()
+    if "crossings" not in parity:
+        fail("test_worker_indicators.py does not compare crossings")
+
+
+def test_alert_copy_states_the_event_without_prescribing_an_action():
+    """Moving-average crossings have no established predictive value. The alert
+    may say what happened; it may not suggest what to do about it."""
+    html = (ROOT / "web" / "index.html").read_text()
+    if "crossingLine" not in html:
+        return fail("the crossing sentence builder is gone")
+    for bad in ("buy signal", "sell signal", "bullish", "bearish",
+                "breakout", "act now", "opportunity"):
+        if bad in html.lower():
+            fail(f"alert wording implies an action: {bad!r}")
+
+
+def test_ios_web_push_limitation_is_detected_and_stated():
+    """On iOS, notifications only work from a Home-Screen install; in a tab the
+    request fails silently and the reader believes alerts are armed."""
+    html = (ROOT / "web" / "index.html").read_text()
+    for hook in ("navigator.standalone", "display-mode: standalone",
+                 "Add to Home Screen", "notifyState"):
+        if hook not in html:
+            fail(f"index.html is missing the iOS push guard: {hook}")
+
+
+def test_notified_and_acknowledged_are_stored_separately():
+    """One flag for both makes the on-page list vanish on the next refresh,
+    seconds after the notification fires."""
+    html = (ROOT / "web" / "index.html").read_text()
+    if "levels.notified" not in html or "levels.acked" not in html:
+        fail("notification-sent and user-acknowledged share one store")
+
+
 # ------------------------------------------------------- generated files
 
 def test_generated_indicator_file_carries_the_market_layer():
@@ -346,6 +644,26 @@ def test_page_and_worker_expose_the_same_market_fields():
              "re-assembling the payload locally is how beta went missing before")
 
 
+def test_the_page_does_not_fall_back_to_nse_52w_after_a_restatement():
+    """Nulling only our own 52-week range leaves NSE's in its place.
+
+    NSE quotes the 52-week high of the TICKER, and a demerged ticker really did
+    print that price — as a larger company. TMPV showed 739.70 against a 322.80
+    close, which would put the position dot at the bottom of a range that no
+    longer exists. The page must suppress both, not just ours.
+    """
+    html = (ROOT / "web" / "index.html").read_text()
+    if "restated" not in html:
+        return fail("merge() no longer distinguishes a restated company")
+    for field in ("year_high", "year_low", "near_year_high", "near_year_low"):
+        line = next((l for l in html.splitlines()
+                     if l.strip().startswith(f"{field}:")), None)
+        if line is None:
+            fail(f"merge() no longer assigns {field}")
+        elif "restated" not in line:
+            fail(f"{field} still falls back to NSE's figure after a restatement: {line.strip()[:80]}")
+
+
 def test_page_reads_the_market_layer():
     html = (ROOT / "web" / "index.html").read_text()
     for hook in ("marketPanel", "relHtml", "market_structure", "data/vrp.json", "ordinal"):
@@ -356,14 +674,50 @@ def test_page_reads_the_market_layer():
         fail("the per-row own-move readout is gone")
 
 
+ADVICE_PHRASES = ("will rise", "will fall", "should buy", "should sell",
+                  "target price", "recommend", "bullish", "bearish",
+                  "buy signal", "sell signal", "act now", "opportunity")
+
+
+def advice_hits(html: str) -> list[str]:
+    """Lines that use advice language, ignoring lines that disclaim it.
+
+    Scanning the whole document as one string cannot tell "a recommendation"
+    from "not a recommendation" — and the second is the product stating exactly
+    what it refuses to be, which is the opposite of the failure being tested
+    for. So the scan is per line, and a negation shortly before the phrase
+    clears it.
+    """
+    hits = []
+    for raw in html.splitlines():
+        line = raw.lower()
+        for p in ADVICE_PHRASES:
+            if p not in line:
+                continue
+            if re.search(r"\b(not|never|no|rather than|without)\b[^.]{0,40}" + re.escape(p), line):
+                continue
+            hits.append(f"{p!r} in: {raw.strip()[:90]}")
+    return hits
+
+
 def test_page_never_calls_the_band_a_direction():
     """A width presented as a direction is the failure mode this whole layer is
     built to avoid, and it is a claim the owner is not registered to make."""
-    html = (ROOT / "web" / "index.html").read_text().lower()
-    for phrase in ("will rise", "will fall", "should buy", "should sell",
-                   "target price", "recommend"):
-        if phrase in html:
-            fail(f"page contains advice language: {phrase!r}")
+    for h in advice_hits((ROOT / "web" / "index.html").read_text()):
+        fail(f"page contains advice language: {h}")
+
+
+def test_the_disclaimer_exemption_does_not_swallow_real_advice():
+    """The exemption above must clear a disclaimer and still catch the real
+    thing — otherwise the guard silently passes everything."""
+    if advice_hits("<p>This is not a recommendation.</p>"):
+        fail("disclaimer wording was flagged as advice")
+    if advice_hits("<p>A measurement, not a recommendation.</p>"):
+        fail("the notification's own disclaimer was flagged as advice")
+    if not advice_hits("<p>We recommend buying this stock.</p>"):
+        fail("real advice was not caught")
+    if not advice_hits("<p>A bullish breakout — act now.</p>"):
+        fail("real advice was not caught")
 
 
 def main() -> int:

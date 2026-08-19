@@ -118,6 +118,56 @@ def fetch_candles(instrument_key: str) -> list[dict]:
     return bars
 
 
+# ------------------------------------------------------- corporate actions
+#
+# Upstox back-adjusts splits and bonuses, but NOT demergers. Measured: TMPV
+# closed 660.75 on 2025-10-13 and 395.45 on 2025-10-14, the Tata Motors
+# demerger. That is not a fall — it is the same ticker describing a smaller
+# company, and the prices either side are not on the same basis.
+#
+# Left alone it poisons everything quietly. The shipped file was publishing a
+# 52-week high of 739.70 for a stock trading at 322.80, a 200-day average
+# straddling the break, a beta of 1.574 against a true 1.482, an R^2 of 0.121
+# against 0.399, and `insufficient: []` — every number asserted as sound.
+#
+# So a break is treated as the beginning of the series: history before it
+# belongs to a different instrument. That is not a special case, it is the rule
+# this file already applies to a newly listed company, and it lets every
+# existing `insufficient` guard do its job.
+
+# No NSE price band lets a session move this far. F&O names — which is all of
+# this watchlist — trade under dynamic bands starting at 10%, flexed in steps;
+# a 25% single-session move is not trading, it is a corporate action. Kept
+# generous on purpose: missing a real break publishes a wrong number, whereas
+# a false positive only shortens a history and nulls an indicator, which the
+# page already states plainly.
+STRUCTURAL_BREAK_LOG = math.log(1.25)
+
+
+def last_structural_break(bars: list[dict]) -> int | None:
+    """Index of the most recent bar whose step from the previous close is too
+    large to be trading. That bar is on the new basis, so it is where usable
+    history begins."""
+    for i in range(len(bars) - 1, 0, -1):
+        prev, cur = bars[i - 1]["close"], bars[i]["close"]
+        if prev > 0 and cur > 0 and abs(math.log(cur / prev)) > STRUCTURAL_BREAK_LOG:
+            return i
+    return None
+
+
+def usable_history(bars: list[dict]) -> tuple[list[dict], str | None]:
+    """(bars since the last corporate action, the date of it or None).
+
+    Idempotent: the returned series starts AT the break, so the offending step
+    — which lies between the break bar and the one before it — is gone, and a
+    second call finds nothing.
+    """
+    i = last_structural_break(bars)
+    if i is None:
+        return bars, None
+    return bars[i:], bars[i]["date"]
+
+
 # ---------------------------------------------------------------- indicators
 
 def sma(closes: list[float], n: int) -> float | None:
@@ -171,6 +221,122 @@ def window_52w(bars: list[dict], asof: date) -> dict | None:
     lo = min(win, key=lambda b: b["low"])
     return {"high": round(hi["high"], 2), "high_date": hi["date"],
             "low": round(lo["low"], 2), "low_date": lo["date"]}
+
+
+# ---------------------------------------------------------------- crossings
+#
+# A confirmed crossing: the close finished the other side of a level it was on
+# the session before. Confirmed rather than touched, because intraday a price
+# wanders across a moving average repeatedly and alerting on each pass would
+# fire a dozen times for one event that never held.
+#
+# Both sides of the comparison move. A 50-day average is a different number
+# today than yesterday, so the test is a sign change in (close - average)
+# between the two sessions — not today's close against yesterday's average,
+# which manufactures crossings out of the average's own drift.
+#
+# What this is NOT: a signal. Moving-average crossovers are among the most
+# thoroughly discredited rules in the literature — they fail out of sample, and
+# the Indian-specific RSI test failed to make money before costs. This exists
+# because the owner asked to be told when a level he is watching is crossed,
+# which is a fact about a stock's own history. Every string it produces must
+# stay a statement of what happened. See README, "Expected range, and why there
+# is no signal".
+
+CROSS_LEVELS = ((50, "50-day average"), (100, "100-day average"), (200, "200-day average"))
+
+
+def crossings(bars: list[dict], asof: date) -> list[dict]:
+    """Confirmed level crossings on the most recent session.
+
+    At most one event per level per stock per session, which the daily cadence
+    gives for free: there is exactly one close to judge.
+    """
+    closes = [b["close"] for b in bars]
+    if len(closes) < 2:
+        return []
+    events: list[dict] = []
+
+    for n, label in CROSS_LEVELS:
+        # The average as of each of the two sessions. Slicing the last bar off
+        # before averaging is what makes `prev` yesterday's average rather than
+        # today's — the whole correctness of this comparison sits on that line.
+        today = sma(closes, n)
+        prev = sma(closes[:-1], n)
+        if today is None or prev is None:
+            continue
+        before, after = closes[-2] - prev, closes[-1] - today
+        # Sitting exactly on the level is not a crossing in either direction.
+        if before == 0 or after == 0 or (before > 0) == (after > 0):
+            continue
+        events.append({
+            "type": "dma",
+            "level": label,
+            "direction": "above" if after > 0 else "below",
+            "value": today,
+            "close": round(closes[-1], 2),
+            "prev_close": round(closes[-2], 2),
+        })
+
+    # 52-week extremes, on a closing basis so "confirmed" means the same thing
+    # here as it does above.
+    #
+    # Only the FIRST of a run is reported. Measured on RELIANCE, a replay of one
+    # year produced new closing lows on 2026-06-04, 06-05 and 06-08 — three
+    # notifications for one slide. A name in a downtrend would alert every day
+    # for weeks, which trains the reader to ignore the channel entirely. A new
+    # extreme is news when it becomes one; the fifth consecutive one is the same
+    # story retold.
+    now = _new_closing_extreme(bars, len(bars) - 1)
+    if now and _new_closing_extreme(bars, len(bars) - 2) != now:
+        events.append({
+            "type": "extreme",
+            "level": f"52-week closing {'high' if now == 'high' else 'low'}",
+            "direction": "above" if now == "high" else "below",
+            "value": _extreme_record(bars, len(bars) - 1, now),
+            "close": round(closes[-1], 2),
+            "prev_close": round(closes[-2], 2),
+        })
+    return events
+
+
+def _new_closing_extreme(bars: list[dict], i: int) -> str | None:
+    """Was bars[i] a new 365-day closing high or low *at the time*?
+
+    Judged against that bar's own trailing year, excluding itself — including it
+    would mean comparing a close against a record it is already part of, and
+    nothing could ever be a new high.
+    """
+    if i < 1 or i >= len(bars):
+        return None
+    asof = date.fromisoformat(bars[i]["date"])
+    cutoff = (asof - timedelta(days=365)).isoformat()
+    prior = [b for b in bars[:i] if b["date"] >= cutoff]
+    # TWO guards, matching window_52w — and for the reason its docstring gives.
+    # Counting bars is the tempting test and it is wrong: a bar count only
+    # catches a series full of holes, it cannot tell whether the series reaches
+    # back a year at all. With the count alone, a name holding 201-246 sessions
+    # covers under twelve months yet passes, and the row then announces a
+    # "52-week closing high" beside a 52-week range reading n/a. Measured: 220
+    # sessions spanning 307 days did exactly that.
+    if not bars or bars[0]["date"] > cutoff:
+        return None
+    if len(prior) < MIN_BARS_52W:
+        return None
+    c = bars[i]["close"]
+    if c > max(b["close"] for b in prior):
+        return "high"
+    if c < min(b["close"] for b in prior):
+        return "low"
+    return None
+
+
+def _extreme_record(bars: list[dict], i: int, kind: str) -> float:
+    """The record that was broken — the previous year's best close."""
+    asof = date.fromisoformat(bars[i]["date"])
+    cutoff = (asof - timedelta(days=365)).isoformat()
+    prior = [b["close"] for b in bars[:i] if b["date"] >= cutoff]
+    return round(max(prior) if kind == "high" else min(prior), 2)
 
 
 # ---------------------------------------------------------------- market fit
@@ -287,6 +453,11 @@ def market_structure(returns: dict[str, dict[str, float]], asof: date) -> dict |
 
 
 def build(sym: str, meta: dict, bars: list[dict]) -> dict:
+    # Anything before an unadjusted corporate action describes a different
+    # company. Cutting here means every indicator below sees one consistent
+    # series, and the ones that no longer have the history to be meaningful
+    # null themselves through the guards they already have.
+    bars, break_date = usable_history(bars)
     closes = [b["close"] for b in bars]
     last = bars[-1]
     asof = date.fromisoformat(last["date"])
@@ -302,6 +473,11 @@ def build(sym: str, meta: dict, bars: list[dict]) -> dict:
         "dma200": sma(closes, 200),
         "rsi14": rsi_wilder(closes),
         "week52": window_52w(bars, asof),
+        "crossings": crossings(bars, asof),
+        # Named rather than merely acted on: a reader seeing a 52-week range go
+        # blank deserves to know it is because the company changed shape, not
+        # because the feed broke.
+        "structural_break": break_date,
     }
     # An indicator that lacks the history to be meaningful is null, never a
     # number computed from a short window. A freshly relisted entity (the
@@ -343,7 +519,12 @@ def build_payload(targets: list[dict], wl: dict, source: str,
         try:
             bars = fetch_candles(f"NSE_EQ|{c['isin']}")
             row = build(c["symbol"], c, bars)
-            rets = log_returns(bars)
+            # The same cut the indicators got. Fitting a beta across a demerger
+            # step reads a -51% corporate action as a trading day: measured on
+            # TMPV it published R^2 0.121 against a true 0.399 and a residual
+            # volatility of 56.5% against 24.3%.
+            clean, _ = usable_history(bars)
+            rets = log_returns(clean)
             returns[c["symbol"]] = rets
             fit = fit_market(rets, market_rets, date.fromisoformat(row["as_of"])) \
                 if market_rets else None

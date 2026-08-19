@@ -226,15 +226,25 @@ def test_generated_file():
     if missing:
         fail(f"watchlist symbols absent from the generated file: {missing}")
     for s in d["stocks"]:
+        # A gap is only acceptable when the row says why. A company restated by
+        # an unadjusted corporate action genuinely has no 52 weeks of history on
+        # its current basis — TMPV, demerged 2025-10-14, is the live case — and
+        # a null there is the correct answer rather than a fault. A gap with no
+        # break to explain it still fails, which is the point: this test exists
+        # to catch indicators quietly going missing.
         if s["insufficient"]:
-            fail(f"{s['symbol']}: unexpected missing indicators {s['insufficient']}")
+            if not s.get("structural_break"):
+                fail(f"{s['symbol']}: unexpected missing indicators {s['insufficient']}")
+            # Either way the checks below need the values that are absent.
             continue
         w = s["week52"]
         if not (w["low"] <= s["close"] <= w["high"]):
             fail(f"{s['symbol']}: close {s['close']} outside 52w {w['low']}–{w['high']}")
         if not (0 <= s["rsi14"] <= 100):
             fail(f"{s['symbol']}: RSI {s['rsi14']} out of range")
-        if s["bars"] < 250:
+        # A restated company legitimately holds fewer bars than the fetch window,
+        # because its usable history begins at the corporate action.
+        if s["bars"] < 250 and not s.get("structural_break"):
             fail(f"{s['symbol']}: only {s['bars']} bars fetched")
 
 

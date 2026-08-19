@@ -103,6 +103,18 @@ def main() -> int:
             elif a is not None and abs(a - b) > TOL:
                 fail(f"{sym}.{k}: local {a} vs worker {b} (diff {abs(a-b):.4f})")
 
+        # Crossings are computed independently on both sides, so this is a real
+        # parity check rather than a passthrough. They are also what the alerts
+        # fire on, which makes a divergence here a wrong notification — the one
+        # failure a reader cannot check for themselves.
+        lc = sorted((c["level"], c["direction"]) for c in local.get("crossings", []))
+        wc = sorted((c["level"], c["direction"]) for c in w.get("crossings", []))
+        if lc != wc:
+            fail(f"{sym}.crossings: local {lc} vs worker {wc}")
+        for a, b in zip(local.get("crossings", []), w.get("crossings", [])):
+            if abs(a["value"] - b["value"]) > TOL:
+                fail(f"{sym}.crossings[{a['level']}].value: local {a['value']} vs worker {b['value']}")
+
         lw, ww = local["week52"], w["week52"]
         if (lw is None) != (ww is None):
             fail(f"{sym}.week52: local {lw!r} vs worker {ww!r}")

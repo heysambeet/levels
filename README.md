@@ -21,9 +21,17 @@ measurements rather than conclusions — see [Not advice](#not-advice).
 
 | Piece | Where | Why |
 |---|---|---|
-| Page | GitHub Pages, from this repo | "Host in Git" — deployed by `.github/workflows/pages.yml` on every push |
+| Page | GitHub Pages, from this repo | "Host in Git" — pushed by `scripts/deploy_pages.sh` |
 | `/api/*` | Cloudflare Worker `levels-proxy` | GitHub Pages is static-only and cannot run the NSE proxy |
-| Daily data | The same workflow, weekdays 19:15 IST | Rebuilds indicators from the close, commits, redeploys |
+| Daily data | The same script, run by hand | Rebuilds indicators, VRP and aliases from the close, commits, redeploys |
+
+**Deployment is manual today.** There is no `.github/` directory: the Actions
+workflow that would deploy on push and rebuild the data on a weekday schedule
+is parked at [`scripts/pages-workflow.yml.parked`](scripts/pages-workflow.yml.parked),
+because the `gh` token lacks the `workflow` scope needed to push it. One
+interactive `gh auth refresh -h github.com -s workflow` turns the automation on.
+Until then nothing rebuilds unless `./scripts/deploy_pages.sh` is run — which is
+also why per-stock volatility premia are not being accumulated (see below).
 
 The page picks its API base by origin: same-origin on localhost (dev proxy),
 the Worker URL otherwise. When the real domain arrives, page and Worker move
@@ -79,8 +87,10 @@ python3 tool/test_proxy_parity.py
 Two data paths, because they change at different rates — and **neither
 depends on someone remembering to rebuild anything**:
 
-- **Prices** — NSE republishes roughly every 5s; the proxy caches 5s and the
-  page re-asks every 10s while the market is open. A ticking "updated Xs ago"
+- **Prices** — NSE republishes roughly every **55 seconds** (measured live on
+  2026-08-19); the proxy caches 5s and the page re-asks every 10s while the
+  market is open, so most refreshes legitimately return the number they already
+  had and the exchange's own stamp is shown beside ours. A ticking "updated Xs ago"
   in the status line turns amber if a refresh is overdue, so the page shows
   its own staleness instead of looking equally current at one second and one
   hour.
@@ -175,6 +185,15 @@ a wrong number, not an error.
   bar-count threshold near 250 rejects every stock while looking like a
   sensible guard. Coverage is tested by whether the series reaches back past
   the cutoff. (Shipped this bug; `test_52w_accepts_a_real_trading_year` pins it.)
+- **Upstox back-adjusts splits and bonuses but NOT demergers.** Measured: TMPV
+  closed 660.75 on 2025-10-13 and 395.45 on 2025-10-14 — the same ticker
+  describing a smaller company, not a 40% fall. Untreated it published a
+  **52-week high of 739.70 for a stock trading at 322.80**, a beta of 1.574
+  against a true 1.482, an R² of 0.121 against 0.399, and `insufficient: []` —
+  every figure asserted as sound. A step beyond any NSE price band (25%) is now
+  treated as **the start of the series**, exactly as a new listing is, and the
+  date is published as `structural_break` so a blank 52-week range explains
+  itself. Both twins implement it; `test_market.py` pins TMPV specifically.
 - **Symbols disappear.** `TATAMOTORS` no longer exists — it demerged into
   TMPV (full history) and TMCV (too short for a 200-day average). `LTIM`
   resolves to nothing at all today. Resolution goes through Upstox's live
@@ -289,6 +308,42 @@ that sample would be biased toward the days someone remembered, and a
 percentile from it would be confidently wrong. The prerequisite is an
 automated daily run, not more code.
 
+## Alerts
+
+Owner's locked shape: **notifications**, on **confirmed** crossings only, at most
+once per stock per level per day, on a **chosen shortlist** rather than the whole
+watchlist. Star a name from its expanded row; the list lives in `localStorage`.
+
+A confirmed crossing is a close that finished the other side of a level it was
+on the session before — not a touch. Intraday a price wanders across a moving
+average repeatedly, and both sides of the comparison move, so the test is a sign
+change in `close − average` **between two sessions**, never today's close
+against yesterday's average.
+
+**A crossing is not a signal.** Moving-average crossovers are among the most
+thoroughly discredited rules in the literature (see below). This exists because
+the owner asked to be told when a level he is watching is crossed, which is a
+fact about a stock's own history. `test_market.py` fails the build on advice
+language anywhere in the page.
+
+Two behaviours that came out of measurement:
+- **Only the first new 52-week extreme of a run is reported.** Replaying a year
+  of RELIANCE produced new closing lows on three consecutive sessions — three
+  notifications for one slide. A reader alerted daily for a fortnight stops
+  reading.
+- **A close sitting exactly on the level is not a crossing**, and because the
+  test only ever compares the last two sessions, that event is not deferred —
+  it is dropped. Accepted: on real prices rounded to two decimals an exact
+  equality is vanishingly rare, and the alternative (calling it a crossing in
+  some direction) invents one.
+
+**Delivery is while the page is open.** Levels evaluates crossings on load and
+reports what changed since you last looked; the panel says so rather than
+implying otherwise. True background delivery needs a push subscription store,
+a scheduled sender and VAPID keys — none of which exist yet, and none of which
+work on iPhone at all unless the page is added to the Home Screen first. That
+case is detected and stated on screen instead of failing silently.
+
 ## Decisions
 
 - **News is shown near a move, never as its cause.** Most 1% moves have no
@@ -316,9 +371,10 @@ automated daily run, not more code.
 - **The watchlist itself.** `tool/watchlist.json` currently holds a
   placeholder — the 30 largest NIFTY 50 names — so the product runs end to
   end. It is flagged `"placeholder": true` and is waiting on the real list.
-- Alert delivery and the rules that fire one. Confirmed crossings on a
-  chosen shortlist is the agreed shape; notifications are the chosen channel,
-  which on iPhone means the page must be added to the Home Screen.
+- **Background alert delivery.** The crossing engine, the shortlist and the
+  notifications are built and tested; what is missing is delivery when the page
+  is closed — a push subscription store (Workers KV), a scheduled sender and
+  VAPID keys. Prerequisite for anything daily is the automated run above.
 - How long after a move a published explainer appears (expect 30–90 min).
   Still unmeasured; needs watching a single name through an actual move.
 

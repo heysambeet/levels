@@ -178,6 +178,32 @@ async function fetchCandles(isin) {
     .sort((a, b) => (a.date < b.date ? -1 : 1));
 }
 
+/* ---------------------------------------------------- corporate actions
+ *
+ * Upstox back-adjusts splits and bonuses but NOT demergers. Measured: TMPV
+ * closed 660.75 on 2025-10-13 and 395.45 on 2025-10-14 — the same ticker
+ * describing a smaller company, not a fall. The prices either side are not on
+ * the same basis, and left alone the step published a 52-week high of 739.70
+ * for a stock trading at 322.80.
+ *
+ * Treated as the start of the series, exactly as a newly listed company is.
+ * The twin of build_indicators.usable_history — the values must agree, and
+ * tool/test_worker_indicators.py compares them against live data.
+ */
+const STRUCTURAL_BREAK_LOG = Math.log(1.25);
+
+/** Bars since the last unadjusted corporate action. Idempotent: the result
+ *  starts AT the break, so the offending step is no longer inside it. */
+function usableHistory(bars) {
+  for (let i = bars.length - 1; i > 0; i--) {
+    const prev = bars[i - 1].close, cur = bars[i].close;
+    if (prev > 0 && cur > 0 && Math.abs(Math.log(cur / prev)) > STRUCTURAL_BREAK_LOG) {
+      return { bars: bars.slice(i), breakDate: bars[i].date };
+    }
+  }
+  return { bars, breakDate: null };
+}
+
 const sma = (c, n) =>
   c.length >= n ? +(c.slice(-n).reduce((a, b) => a + b, 0) / n).toFixed(2) : null;
 
@@ -219,6 +245,86 @@ function window52w(bars) {
            low: +lo.low.toFixed(2), low_date: lo.date };
 }
 
+/* ---------------------------------------------------------------- crossings
+ *
+ * The JavaScript twin of build_indicators.crossings(). It is implemented here
+ * rather than passed through from the manifest for the same reason the
+ * averages are: this endpoint exists to reflect the newest printed bar, and a
+ * crossing carried over from a manifest built on an older bar would be
+ * yesterday's news presented as today's. tool/test_worker_indicators.py
+ * compares the two against live data and fails on any disagreement.
+ *
+ * A crossing is not a signal — see README. It is a statement that a level the
+ * reader asked to watch was crossed, and the wording must never exceed that.
+ */
+const CROSS_LEVELS = [[50, '50-day average'], [100, '100-day average'],
+                      [200, '200-day average']];
+
+/** Was bars[i] a new 365-day closing extreme at the time? 'high' | 'low' | null.
+ *  Judged against its own trailing year EXCLUDING itself — including it would
+ *  compare a close against a record it is already part of. */
+function newClosingExtreme(bars, i) {
+  if (i < 1 || i >= bars.length) return null;
+  const asof = new Date(bars[i].date + 'T00:00:00Z');
+  const cutoff = new Date(asof.getTime() - 365 * 86400 * 1000).toISOString().slice(0, 10);
+  const prior = bars.slice(0, i).filter((b) => b.date >= cutoff);
+  // TWO guards, matching window52w. A bar count only catches a series full of
+  // holes; it cannot tell whether the series reaches back a year at all, so a
+  // name with 201-246 sessions covers under twelve months and still passes,
+  // announcing a "52-week closing high" beside a 52-week range reading n/a.
+  if (!bars.length || bars[0].date > cutoff) return null;
+  if (prior.length < INDICATORS.minBars52w) return null;
+  const c = bars[i].close;
+  if (c > Math.max(...prior.map((b) => b.close))) return 'high';
+  if (c < Math.min(...prior.map((b) => b.close))) return 'low';
+  return null;
+}
+
+function extremeRecord(bars, i, kind) {
+  const asof = new Date(bars[i].date + 'T00:00:00Z');
+  const cutoff = new Date(asof.getTime() - 365 * 86400 * 1000).toISOString().slice(0, 10);
+  const prior = bars.slice(0, i).filter((b) => b.date >= cutoff).map((b) => b.close);
+  return +(kind === 'high' ? Math.max(...prior) : Math.min(...prior)).toFixed(2);
+}
+
+function crossings(bars) {
+  const closes = bars.map((b) => b.close);
+  if (closes.length < 2) return [];
+  const events = [];
+
+  for (const [n, label] of CROSS_LEVELS) {
+    // Yesterday's average, not today's: slicing the last bar off before
+    // averaging is what stops the average's own drift manufacturing crossings.
+    const today = sma(closes, n);
+    const prev = sma(closes.slice(0, -1), n);
+    if (today == null || prev == null) continue;
+    const before = closes[closes.length - 2] - prev;
+    const after = closes[closes.length - 1] - today;
+    if (before === 0 || after === 0 || before > 0 === after > 0) continue;
+    events.push({
+      type: 'dma', level: label, direction: after > 0 ? 'above' : 'below',
+      value: today, close: +closes[closes.length - 1].toFixed(2),
+      prev_close: +closes[closes.length - 2].toFixed(2),
+    });
+  }
+
+  // Only the first of a run. A name making successive new lows would otherwise
+  // alert every day for weeks — measured on RELIANCE, three consecutive days in
+  // June 2026 — which teaches the reader to ignore the channel.
+  const now = newClosingExtreme(bars, bars.length - 1);
+  if (now && newClosingExtreme(bars, bars.length - 2) !== now) {
+    events.push({
+      type: 'extreme',
+      level: `52-week closing ${now === 'high' ? 'high' : 'low'}`,
+      direction: now === 'high' ? 'above' : 'below',
+      value: extremeRecord(bars, bars.length - 1, now),
+      close: +closes[closes.length - 1].toFixed(2),
+      prev_close: +closes[closes.length - 2].toFixed(2),
+    });
+  }
+  return events;
+}
+
 async function handleIndicators() {
   const r = ROUTES.indicators;
   // The committed file supplies the watchlist (symbols + ISINs); the numbers
@@ -235,7 +341,10 @@ async function handleIndicators() {
   // this answer is cached for an hour.
   for (const t of targets) {
     try {
-      const bars = await fetchCandles(t.isin);
+      // Cut at any unadjusted corporate action before anything is computed, so
+      // every indicator below sees one consistent series and the ones without
+      // the history to be meaningful null themselves through their own guards.
+      const { bars, breakDate } = usableHistory(await fetchCandles(t.isin));
       const closes = bars.map((b) => b.close);
       const last = bars[bars.length - 1];
       const row = {
@@ -250,6 +359,8 @@ async function handleIndicators() {
         dma200: sma(closes, 200),
         rsi14: rsiWilder(closes),
         week52: window52w(bars),
+        crossings: crossings(bars),
+        structural_break: breakDate,
         // Beta rides along from the manifest rather than being recomputed here.
         // It is a one-year regression against the index: it moves in the third
         // decimal from one session to the next, and recomputing it live would
